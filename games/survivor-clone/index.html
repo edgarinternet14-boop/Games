@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0d1014">
+  <title>Survivor Clone</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #0d1014;
+      color: #e8ecf2;
+      font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    }
+    #game {
+      position: fixed;
+      inset: 0;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+    }
+    #game canvas { display: block; }
+    #notice {
+      display: none;
+      position: fixed;
+      inset: 0;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      text-align: center;
+      line-height: 1.5;
+    }
+    #notice.visible { display: flex; }
+    #notice code {
+      background: #1d232c;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div id="game"></div>
+  <div id="notice" role="alert"></div>
+
+  <!-- Phaser 3 from the CDN (exposes the global `Phaser`). -->
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.90.0/dist/phaser.min.js"></script>
+
+  <script>
+    // ES modules are blocked on file:// URLs and Phaser needs the network, so
+    // explain what went wrong instead of leaving a blank page.
+    (function () {
+      var notice = document.getElementById('notice');
+      function show(html) {
+        notice.innerHTML = '<div>' + html + '</div>';
+        notice.classList.add('visible');
+      }
+      if (location.protocol === 'file:') {
+        show('This game is split into ES modules, which browsers will not load from <code>file://</code>.<br>' +
+          'Serve the folder instead, e.g. <code>python3 -m http.server</code>, then open <code>http://localhost:8000</code>.');
+      } else if (typeof window.Phaser === 'undefined') {
+        show('Phaser could not be loaded from the CDN. Check your connection and reload the page.');
+      }
+    })();
+  </script>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
