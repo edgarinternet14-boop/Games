@@ -1,0 +1,1216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Asteroids Clone</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #000;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  body {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  #game {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    touch-action: none;
+  }
+
+  /* On-screen controls, revealed only on touch devices. */
+  #touch {
+    --btn: min(72px, 16vw);
+    --btn-small: min(52px, 12vw);
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding: 0 12px calc(16px + env(safe-area-inset-bottom));
+    pointer-events: none;
+  }
+
+  #touch[hidden] {
+    display: none;
+  }
+
+  #touch .pad {
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+    pointer-events: auto;
+  }
+
+  #touch button {
+    width: var(--btn);
+    height: var(--btn);
+    padding: 0;
+    border-radius: 50%;
+    border: 2px solid rgba(234, 246, 255, 0.45);
+    background: rgba(234, 246, 255, 0.06);
+    color: rgba(234, 246, 255, 0.85);
+    font: 600 22px/1 "Courier New", Courier, monospace;
+    touch-action: none;
+  }
+
+  #touch button.small {
+    width: var(--btn-small);
+    height: var(--btn-small);
+    font-size: 16px;
+  }
+
+  #touch button.on {
+    background: rgba(234, 246, 255, 0.25);
+  }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="Asteroids game"></canvas>
+
+<div id="touch" hidden>
+  <div class="pad">
+    <button type="button" data-action="left" aria-label="Rotate left">&#9664;&#xFE0E;</button>
+    <button type="button" data-action="right" aria-label="Rotate right">&#9654;&#xFE0E;</button>
+  </div>
+  <div class="pad">
+    <button type="button" class="small" data-action="hyper" aria-label="Hyperspace">H</button>
+    <button type="button" data-action="thrust" aria-label="Thrust">&#9650;</button>
+    <button type="button" data-action="fire" aria-label="Fire">&#9679;</button>
+  </div>
+</div>
+
+<noscript style="color:#eaf6ff;font-family:monospace;position:fixed;top:40%;width:100%;text-align:center">
+  This game needs JavaScript enabled.
+</noscript>
+
+<script>
+(() => {
+  'use strict';
+
+  // ===========================================================================
+  // Configuration
+  // ===========================================================================
+  // Distances are in world units: the shorter side of the screen is always
+  // CFG.VIEW units long, so the game plays the same on any display size.
+  // Speeds are units/second, times are seconds, angles are radians.
+
+  const TAU = Math.PI * 2;
+
+  const CFG = {
+    VIEW: 800,
+    MAX_STEP: 1 / 120,        // largest simulation sub-step
+    MAX_FRAME: 0.1,           // longer frames (tab switch, hitch) are clamped
+
+    SHIP_RADIUS: 18,          // broad-phase radius; hull below is the real shape
+    SHIP_TURN: TAU * 0.75,
+    SHIP_THRUST: 430,         // acceleration, units/s^2
+    SHIP_DRAG: 0.4,           // exponential velocity decay per second
+    SHIP_MAX_SPEED: 520,
+
+    BULLET_SPEED: 660,
+    BULLET_LIFE: 0.85,
+    BULLET_MAX: 6,
+    FIRE_COOLDOWN: 0.15,
+
+    HYPER_COOLDOWN: 1.0,
+    INVULN_TIME: 2.5,
+    RESPAWN_DELAY: 1.5,
+    SAFE_RADIUS: 120,         // respawn waits until the centre is this clear
+    START_LIVES: 3,
+    EXTRA_LIFE_EVERY: 10000,
+    WAVE_DELAY: 2.0,
+    GAMEOVER_DELAY: 2.0,
+    RESTART_LOCKOUT: 1.0,     // ignore restart input right after dying
+    MAX_PARTICLES: 500,
+  };
+
+  // Asteroid classes, largest first. A hit splits one into two of the next class.
+  const SIZES = [
+    { radius: 50, speed: [30, 65],   spin: 0.5, score: 20 },
+    { radius: 27, speed: [70, 120],  spin: 1.1, score: 50 },
+    { radius: 14, speed: [115, 185], spin: 1.9, score: 100 },
+  ];
+
+  // Ship outline in local space with the nose along +x. Drawn and collided as-is.
+  const SHIP_HULL = [18, 0, -12, -11, -6, 0, -12, 11];
+  const SHIP_NOSE = SHIP_HULL[0];
+
+  const COLOR = '#eaf6ff';
+  const GLOW = 'rgba(140, 200, 255, 0.8)';
+  const FONT = '"Courier New", Courier, ui-monospace, monospace';
+  const MIN_FONT_PX = 12;     // keeps text legible on small phones
+  const HI_KEY = 'asteroids-clone.hiscore';
+  const MUTE_KEY = 'asteroids-clone.muted';
+
+  // ===========================================================================
+  // Helpers
+  // ===========================================================================
+
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const randInt = (a, b) => Math.floor(rand(a, b + 1));
+  const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+  const wrap = (v, size) => ((v % size) + size) % size;
+
+  // Shortest signed distance between two coordinates on a wrapping axis.
+  function wrapDelta(d, size) {
+    if (d > size / 2) return d - size;
+    if (d < -size / 2) return d + size;
+    return d;
+  }
+
+  function mediaMatches(query) {
+    return !!(window.matchMedia && window.matchMedia(query).matches);
+  }
+
+  // localStorage can throw (private mode, blocked storage), so never trust it.
+  const store = {
+    get(key, fallback) {
+      try {
+        const v = localStorage.getItem(key);
+        return v === null ? fallback : v;
+      } catch (e) {
+        return fallback;
+      }
+    },
+    set(key, value) {
+      try {
+        localStorage.setItem(key, String(value));
+      } catch (e) { /* ignore */ }
+    },
+  };
+
+  // Polygons are flat [x0, y0, x1, y1, ...] arrays.
+
+  function pointInPoly(px, py, pts) {
+    let inside = false;
+    for (let i = 0, j = pts.length - 2; i < pts.length; j = i, i += 2) {
+      const xi = pts[i], yi = pts[i + 1], xj = pts[j], yj = pts[j + 1];
+      if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  function segmentsCross(ax, ay, bx, by, cx, cy, dx, dy) {
+    const rx = bx - ax, ry = by - ay, sx = dx - cx, sy = dy - cy;
+    const den = rx * sy - ry * sx;
+    if (den === 0) return false;
+    const t = ((cx - ax) * sy - (cy - ay) * sx) / den;
+    const u = ((cx - ax) * ry - (cy - ay) * rx) / den;
+    return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+  }
+
+  // Does the segment a->b touch the polygon (end point inside, or crossing an edge)?
+  function segmentHitsPoly(ax, ay, bx, by, pts) {
+    if (pointInPoly(bx, by, pts)) return true;
+    for (let i = 0, j = pts.length - 2; i < pts.length; j = i, i += 2) {
+      if (segmentsCross(ax, ay, bx, by, pts[j], pts[j + 1], pts[i], pts[i + 1])) return true;
+    }
+    return false;
+  }
+
+  function polysIntersect(a, b) {
+    for (let i = 0, j = a.length - 2; i < a.length; j = i, i += 2) {
+      for (let k = 0, l = b.length - 2; k < b.length; l = k, k += 2) {
+        if (segmentsCross(a[j], a[j + 1], a[i], a[i + 1], b[l], b[l + 1], b[k], b[k + 1])) return true;
+      }
+    }
+    // No edges cross: they only overlap if one contains the other.
+    return pointInPoly(a[0], a[1], b) || pointInPoly(b[0], b[1], a);
+  }
+
+  // Compact a list in place, keeping the items that pass the test.
+  function keep(list, test) {
+    let n = 0;
+    for (let i = 0; i < list.length; i++) if (test(list[i])) list[n++] = list[i];
+    list.length = n;
+  }
+
+  const isAlive = (e) => e.life > 0;
+  const notDead = (a) => !a.dead;
+
+  // ===========================================================================
+  // Sound — synthesised with Web Audio, no audio files
+  // ===========================================================================
+
+  const Sound = (() => {
+    let ac = null;
+    let master = null;
+    let noiseBuf = null;
+    let engine = null;  // { src, gain } while thrusting
+    let muted = store.get(MUTE_KEY, '0') === '1';
+
+    // Must be called from a user gesture before browsers allow audio.
+    function init() {
+      if (!ac) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        try {
+          ac = new AC();
+        } catch (e) {
+          return;
+        }
+        master = ac.createGain();
+        master.gain.value = 0.3;
+        master.connect(ac.destination);
+        noiseBuf = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate);
+        const data = noiseBuf.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      }
+      if (ac.state === 'suspended') ac.resume();
+    }
+
+    function tone(f0, f1, dur, type, vol, delay = 0) {
+      if (!ac || muted) return;
+      const t = ac.currentTime + delay;
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(f0, t);
+      osc.frequency.exponentialRampToValueAtTime(f1, t + dur);
+      gain.gain.setValueAtTime(vol, t);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      osc.connect(gain).connect(master);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    }
+
+    function noise(dur, vol, cutoff) {
+      if (!ac || muted) return;
+      const t = ac.currentTime;
+      const src = ac.createBufferSource();
+      const filter = ac.createBiquadFilter();
+      const gain = ac.createGain();
+      src.buffer = noiseBuf;
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(cutoff, t);
+      filter.frequency.exponentialRampToValueAtTime(Math.max(80, cutoff * 0.2), t + dur);
+      gain.gain.setValueAtTime(vol, t);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      src.connect(filter).connect(gain).connect(master);
+      src.start(t);
+      src.stop(t + dur);
+    }
+
+    function setThrust(on) {
+      if (!ac) return;
+      on = on && !muted;
+      if (on && !engine) {
+        const src = ac.createBufferSource();
+        const filter = ac.createBiquadFilter();
+        const gain = ac.createGain();
+        src.buffer = noiseBuf;
+        src.loop = true;
+        filter.type = 'lowpass';
+        filter.frequency.value = 420;
+        gain.gain.value = 0;
+        gain.gain.setTargetAtTime(0.35, ac.currentTime, 0.03);
+        src.connect(filter).connect(gain).connect(master);
+        src.start();
+        engine = { src, gain };
+      } else if (!on && engine) {
+        engine.gain.gain.setTargetAtTime(0, ac.currentTime, 0.04);
+        engine.src.stop(ac.currentTime + 0.25);
+        engine = null;
+      }
+    }
+
+    return {
+      init,
+      setThrust,
+      get muted() {
+        return muted;
+      },
+      toggleMute() {
+        muted = !muted;
+        store.set(MUTE_KEY, muted ? '1' : '0');
+        if (muted) setThrust(false);
+      },
+      fire: () => tone(1100, 180, 0.11, 'square', 0.1),
+      bang: (size) => noise([0.9, 0.55, 0.35][size], 0.9, [700, 1200, 2000][size]),
+      die: () => {
+        noise(1.4, 1, 600);
+        tone(320, 40, 1.0, 'sawtooth', 0.12);
+      },
+      hyper: () => tone(180, 1400, 0.3, 'sine', 0.18),
+      extraLife: () => [0, 0.12, 0.24].forEach((d, i) => tone(660 + i * 220, 660 + i * 220, 0.1, 'square', 0.08, d)),
+      beat: (high) => tone(high ? 64 : 56, high ? 60 : 52, 0.11, 'square', 0.12),
+    };
+  })();
+
+  // ===========================================================================
+  // State
+  // ===========================================================================
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const touchUI = document.getElementById('touch');
+
+  const view = { dpr: 1, scale: 1 };
+  const world = { w: CFG.VIEW, h: CFG.VIEW };
+  const reduceMotion = mediaMatches('(prefers-reduced-motion: reduce)');
+  let touchMode = mediaMatches('(pointer: coarse)');
+
+  const game = {
+    state: 'title',           // 'title' | 'playing' | 'paused' | 'gameover'
+    stateTime: 0,
+    score: 0,
+    hiScore: Number(store.get(HI_KEY, 0)) || 0,
+    newHi: false,
+    lives: 0,
+    wave: 0,
+    waveTime: 0,
+    waveTimer: -1,            // countdown to the next wave; -1 when idle
+    respawnTimer: 0,
+    gameOverTimer: 0,
+    beatTimer: 0,
+    beatHigh: false,
+    banner: '',
+    bannerTime: 0,
+    shake: 0,
+  };
+
+  const ship = {
+    x: 0, y: 0, vx: 0, vy: 0,
+    angle: -Math.PI / 2,
+    alive: false,
+    thrusting: false,
+    invuln: 0,
+    fireCd: 0,
+    hyperCd: 0,
+    exhaust: 0,
+  };
+
+  const asteroids = [];
+  const bullets = [];
+  const particles = [];
+  const debris = [];
+
+  // Scratch buffer for the ship hull in an asteroid's local space.
+  const hullScratch = new Array(SHIP_HULL.length);
+
+  function setState(state) {
+    game.state = state;
+    game.stateTime = 0;
+  }
+
+  function showBanner(text) {
+    game.banner = text;
+    game.bannerTime = 2;
+  }
+
+  // ===========================================================================
+  // Canvas sizing
+  // ===========================================================================
+
+  function resize() {
+    const cssW = Math.max(1, canvas.clientWidth || window.innerWidth);
+    const cssH = Math.max(1, canvas.clientHeight || window.innerHeight);
+    const oldW = world.w, oldH = world.h;
+
+    view.dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    view.scale = Math.min(cssW, cssH) / CFG.VIEW;
+    canvas.width = Math.round(cssW * view.dpr);
+    canvas.height = Math.round(cssH * view.dpr);
+    world.w = cssW / view.scale;
+    world.h = cssH / view.scale;
+
+    // Keep everything at the same relative position on screen.
+    const kx = world.w / oldW, ky = world.h / oldH;
+    for (const list of [[ship], asteroids, bullets, particles, debris]) {
+      for (const e of list) {
+        e.x = wrap(e.x * kx, world.w);
+        e.y = wrap(e.y * ky, world.h);
+      }
+    }
+  }
+
+  // ===========================================================================
+  // Input
+  // ===========================================================================
+
+  const KEYS = {
+    left:   ['ArrowLeft', 'KeyA'],
+    right:  ['ArrowRight', 'KeyD'],
+    thrust: ['ArrowUp', 'KeyW'],
+    fire:   ['Space'],
+    hyper:  ['ArrowDown', 'KeyS', 'KeyH'],
+    pause:  ['KeyP', 'Escape'],
+    mute:   ['KeyM'],
+    start:  ['Enter', 'NumpadEnter', 'KeyR'],
+  };
+
+  const CODE_TO_ACTION = {};
+  for (const [action, codes] of Object.entries(KEYS)) {
+    for (const code of codes) CODE_TO_ACTION[code] = action;
+  }
+
+  const heldCodes = new Set();
+  const touchHeld = new Set();
+  // Taps are latched so a press shorter than one frame is never lost.
+  const input = { fireQueued: false, hyperQueued: false };
+
+  function isDown(action) {
+    if (touchHeld.has(action)) return true;
+    for (const code of KEYS[action]) if (heldCodes.has(code)) return true;
+    return false;
+  }
+
+  // Start / restart / resume, depending on where we are.
+  function primary() {
+    if (game.state === 'title') newGame();
+    else if (game.state === 'gameover' && game.stateTime >= CFG.RESTART_LOCKOUT) newGame();
+    else if (game.state === 'paused') setState('playing');
+  }
+
+  function onPress(action) {
+    const playing = game.state === 'playing';
+    switch (action) {
+      case 'fire':
+        if (playing) input.fireQueued = true;
+        else primary();
+        break;
+      case 'hyper':
+        if (playing) input.hyperQueued = true;
+        break;
+      case 'pause':
+        if (playing) setState('paused');
+        else if (game.state === 'paused') setState('playing');
+        break;
+      case 'mute':
+        Sound.toggleMute();
+        break;
+      case 'start':
+        primary();
+        break;
+    }
+  }
+
+  function releaseAll() {
+    heldCodes.clear();
+    touchHeld.clear();
+    for (const btn of touchUI.querySelectorAll('.on')) btn.classList.remove('on');
+  }
+
+  function autoPause() {
+    releaseAll();
+    if (game.state === 'playing') setState('paused');
+  }
+
+  function enableTouch() {
+    touchMode = true;
+    touchUI.hidden = false;
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const action = CODE_TO_ACTION[e.code];
+    if (!action) return;
+    e.preventDefault();
+    Sound.init();
+    heldCodes.add(e.code);
+    if (!e.repeat) onPress(action);
+  });
+
+  window.addEventListener('keyup', (e) => heldCodes.delete(e.code));
+  window.addEventListener('blur', autoPause);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) autoPause();
+  });
+  // Some mobile browsers only unlock audio on pointerup / touchend.
+  window.addEventListener('pointerup', () => Sound.init());
+
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'touch') enableTouch();
+    Sound.init();
+    primary();
+  });
+
+  for (const btn of touchUI.querySelectorAll('[data-action]')) {
+    const action = btn.dataset.action;
+    const release = () => {
+      touchHeld.delete(action);
+      btn.classList.remove('on');
+    };
+    btn.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      if (btn.setPointerCapture) btn.setPointerCapture(e.pointerId);
+      Sound.init();
+      touchHeld.add(action);
+      btn.classList.add('on');
+      if (game.state !== 'playing') primary();
+      else if (action === 'fire') input.fireQueued = true;
+      else if (action === 'hyper') input.hyperQueued = true;
+    });
+    btn.addEventListener('pointerup', release);
+    btn.addEventListener('pointercancel', release);
+    btn.addEventListener('lostpointercapture', release);
+    btn.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+
+  if (touchMode) enableTouch();
+
+  // ===========================================================================
+  // Spawning
+  // ===========================================================================
+
+  function makeAsteroid(x, y, size, dir = rand(0, TAU)) {
+    const def = SIZES[size];
+    const speedMult = 1 + clamp(game.wave - 1, 0, 10) * 0.06;
+    const speed = rand(def.speed[0], def.speed[1]) * speedMult;
+
+    // A jagged ring of vertices. Angles stay in order, so the polygon never
+    // self-intersects and point-in-polygon tests stay valid.
+    const n = randInt(9, 13);
+    const shape = new Array(n * 2);
+    let rMax = 0;
+    for (let i = 0; i < n; i++) {
+      const ang = ((i + rand(-0.3, 0.3)) / n) * TAU;
+      const r = def.radius * rand(0.72, 1.12);
+      shape[i * 2] = Math.cos(ang) * r;
+      shape[i * 2 + 1] = Math.sin(ang) * r;
+      rMax = Math.max(rMax, r);
+    }
+
+    return {
+      x: wrap(x, world.w),
+      y: wrap(y, world.h),
+      vx: Math.cos(dir) * speed,
+      vy: Math.sin(dir) * speed,
+      angle: rand(0, TAU),
+      spin: rand(-def.spin, def.spin),
+      size,
+      shape,
+      rMax,
+      dead: false,
+    };
+  }
+
+  // A random point at least minDist (on the wrapping torus) from (ax, ay).
+  function spawnPointAwayFrom(ax, ay, minDist) {
+    for (let i = 0; i < 40; i++) {
+      const x = rand(0, world.w), y = rand(0, world.h);
+      const dx = wrapDelta(x - ax, world.w), dy = wrapDelta(y - ay, world.h);
+      if (dx * dx + dy * dy > minDist * minDist) return { x, y };
+    }
+    return { x: ax + world.w / 2, y: ay + world.h / 2 };
+  }
+
+  function spawnLarge(count) {
+    const ax = ship.alive ? ship.x : world.w / 2;
+    const ay = ship.alive ? ship.y : world.h / 2;
+    const minDist = Math.min(260, Math.min(world.w, world.h) * 0.35);
+    for (let i = 0; i < count; i++) {
+      const p = spawnPointAwayFrom(ax, ay, minDist);
+      asteroids.push(makeAsteroid(p.x, p.y, 0));
+    }
+  }
+
+  function nextWave() {
+    game.wave++;
+    game.waveTime = 0;
+    game.waveTimer = -1;
+    spawnLarge(Math.min(2 + game.wave * 2, 11));
+    showBanner('WAVE ' + game.wave);
+  }
+
+  function burst(x, y, count, speed, life) {
+    for (let i = 0; i < count && particles.length < CFG.MAX_PARTICLES; i++) {
+      const a = rand(0, TAU);
+      const s = rand(0.2, 1) * speed;
+      const l = rand(0.4, 1) * life;
+      particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: l, max: l });
+    }
+  }
+
+  // Break the hull into its edges and let them drift apart.
+  function shatterShip() {
+    const c = Math.cos(ship.angle), s = Math.sin(ship.angle), h = SHIP_HULL;
+    for (let i = 0, j = h.length - 2; i < h.length; j = i, i += 2) {
+      const x1 = h[j] * c - h[j + 1] * s, y1 = h[j] * s + h[j + 1] * c;
+      const x2 = h[i] * c - h[i + 1] * s, y2 = h[i] * s + h[i + 1] * c;
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      const out = Math.atan2(my, mx), sp = rand(20, 70);
+      const life = rand(1.2, 2.2);
+      debris.push({
+        x: ship.x + mx,
+        y: ship.y + my,
+        vx: ship.vx * 0.4 + Math.cos(out) * sp,
+        vy: ship.vy * 0.4 + Math.sin(out) * sp,
+        angle: Math.atan2(y2 - y1, x2 - x1),
+        spin: rand(-3, 3),
+        len: Math.hypot(x2 - x1, y2 - y1),
+        life,
+        max: life,
+      });
+    }
+  }
+
+  // ===========================================================================
+  // Game flow
+  // ===========================================================================
+
+  function resetShip() {
+    ship.x = world.w / 2;
+    ship.y = world.h / 2;
+    ship.vx = 0;
+    ship.vy = 0;
+    ship.angle = -Math.PI / 2;
+    ship.alive = true;
+    ship.thrusting = false;
+    ship.invuln = CFG.INVULN_TIME;
+    ship.fireCd = 0;
+    ship.hyperCd = 0;
+    ship.exhaust = 0;
+  }
+
+  function newGame() {
+    game.score = 0;
+    game.lives = CFG.START_LIVES;
+    game.wave = 0;
+    game.newHi = false;
+    game.beatTimer = 0;
+    asteroids.length = 0;
+    bullets.length = 0;
+    particles.length = 0;
+    debris.length = 0;
+    input.fireQueued = false;
+    input.hyperQueued = false;
+    resetShip();
+    nextWave();
+    setState('playing');
+  }
+
+  function gameOver() {
+    if (game.score > game.hiScore) {
+      game.hiScore = game.score;
+      game.newHi = true;
+      store.set(HI_KEY, game.hiScore);
+    }
+    setState('gameover');
+  }
+
+  function addScore(points) {
+    const before = Math.floor(game.score / CFG.EXTRA_LIFE_EVERY);
+    game.score += points;
+    if (Math.floor(game.score / CFG.EXTRA_LIFE_EVERY) > before) {
+      game.lives++;
+      Sound.extraLife();
+      showBanner('EXTRA LIFE');
+    }
+  }
+
+  function destroyAsteroid(a, hitVx, hitVy) {
+    a.dead = true;
+    addScore(SIZES[a.size].score);
+    burst(a.x, a.y, 10 + (2 - a.size) * 8, 60 + a.rMax * 2, 0.9);
+    Sound.bang(a.size);
+
+    if (a.size + 1 >= SIZES.length) return;
+
+    // Two smaller pieces fly off roughly sideways to the impact, keep some of
+    // the parent's momentum, and are always faster than the parent was.
+    const base = Math.atan2(hitVy, hitVx);
+    const minSpeed = Math.hypot(a.vx, a.vy) * 1.2;
+    for (const side of [1, -1]) {
+      const dir = base + side * (Math.PI / 2 + rand(-0.6, 0.6));
+      const child = makeAsteroid(a.x, a.y, a.size + 1, dir);
+      child.vx += a.vx * 0.35;
+      child.vy += a.vy * 0.35;
+      const sp = Math.hypot(child.vx, child.vy);
+      if (sp > 0 && sp < minSpeed) {
+        child.vx *= minSpeed / sp;
+        child.vy *= minSpeed / sp;
+      }
+      child.x = wrap(child.x + Math.cos(dir) * child.rMax * 0.5, world.w);
+      child.y = wrap(child.y + Math.sin(dir) * child.rMax * 0.5, world.h);
+      asteroids.push(child);
+    }
+  }
+
+  function killShip() {
+    ship.alive = false;
+    ship.thrusting = false;
+    game.lives--;
+    shatterShip();
+    burst(ship.x, ship.y, 30, 160, 1.0);
+    Sound.die();
+    if (!reduceMotion) game.shake = 0.45;
+    if (game.lives > 0) game.respawnTimer = CFG.RESPAWN_DELAY;
+    else game.gameOverTimer = CFG.GAMEOVER_DELAY;
+  }
+
+  function isAreaClear(x, y, r) {
+    return asteroids.every((a) => {
+      const dx = wrapDelta(a.x - x, world.w), dy = wrapDelta(a.y - y, world.h);
+      const min = a.rMax + r;
+      return dx * dx + dy * dy > min * min;
+    });
+  }
+
+  function fire(c, s) {
+    bullets.push({
+      x: wrap(ship.x + c * SHIP_NOSE, world.w),
+      y: wrap(ship.y + s * SHIP_NOSE, world.h),
+      vx: ship.vx + c * CFG.BULLET_SPEED,
+      vy: ship.vy + s * CFG.BULLET_SPEED,
+      life: CFG.BULLET_LIFE,
+    });
+    ship.fireCd = CFG.FIRE_COOLDOWN;
+    Sound.fire();
+  }
+
+  function hyperspace() {
+    burst(ship.x, ship.y, 14, 90, 0.5);
+    ship.x = rand(world.w * 0.1, world.w * 0.9);
+    ship.y = rand(world.h * 0.1, world.h * 0.9);
+    ship.vx = 0;
+    ship.vy = 0;
+    ship.hyperCd = CFG.HYPER_COOLDOWN;
+    burst(ship.x, ship.y, 14, 90, 0.5);
+    Sound.hyper();
+  }
+
+  // ===========================================================================
+  // Simulation
+  // ===========================================================================
+
+  function updateShip(dt) {
+    if (!ship.alive) return;
+
+    const turn = (isDown('right') ? 1 : 0) - (isDown('left') ? 1 : 0);
+    ship.angle += turn * CFG.SHIP_TURN * dt;
+    const c = Math.cos(ship.angle), s = Math.sin(ship.angle);
+
+    ship.thrusting = isDown('thrust');
+    if (ship.thrusting) {
+      ship.vx += c * CFG.SHIP_THRUST * dt;
+      ship.vy += s * CFG.SHIP_THRUST * dt;
+
+      ship.exhaust += dt * 60;
+      while (ship.exhaust >= 1 && particles.length < CFG.MAX_PARTICLES) {
+        ship.exhaust -= 1;
+        const back = rand(80, 160), side = rand(-40, 40);
+        const life = rand(0.15, 0.35);
+        particles.push({
+          x: ship.x - c * 9,
+          y: ship.y - s * 9,
+          vx: ship.vx - c * back - s * side,
+          vy: ship.vy - s * back + c * side,
+          life,
+          max: life,
+        });
+      }
+    }
+
+    // Momentum: velocity persists, decaying slowly, capped at a top speed.
+    const drag = Math.exp(-CFG.SHIP_DRAG * dt);
+    ship.vx *= drag;
+    ship.vy *= drag;
+    const speed = Math.hypot(ship.vx, ship.vy);
+    if (speed > CFG.SHIP_MAX_SPEED) {
+      ship.vx *= CFG.SHIP_MAX_SPEED / speed;
+      ship.vy *= CFG.SHIP_MAX_SPEED / speed;
+    }
+    ship.x = wrap(ship.x + ship.vx * dt, world.w);
+    ship.y = wrap(ship.y + ship.vy * dt, world.h);
+
+    ship.invuln = Math.max(0, ship.invuln - dt);
+    ship.fireCd -= dt;
+    ship.hyperCd -= dt;
+
+    if (ship.fireCd <= 0 && (input.fireQueued || isDown('fire'))) {
+      input.fireQueued = false;
+      if (bullets.length < CFG.BULLET_MAX) fire(c, s);
+    }
+    if (input.hyperQueued) {
+      input.hyperQueued = false;
+      if (ship.hyperCd <= 0) hyperspace();
+    }
+  }
+
+  function moveEverything(dt) {
+    for (const b of bullets) {
+      b.x = wrap(b.x + b.vx * dt, world.w);
+      b.y = wrap(b.y + b.vy * dt, world.h);
+      b.life -= dt;
+    }
+    for (const a of asteroids) {
+      a.x = wrap(a.x + a.vx * dt, world.w);
+      a.y = wrap(a.y + a.vy * dt, world.h);
+      a.angle += a.spin * dt;
+    }
+    const drag = Math.exp(-1.5 * dt);
+    for (const p of particles) {
+      p.x = wrap(p.x + p.vx * dt, world.w);
+      p.y = wrap(p.y + p.vy * dt, world.h);
+      p.vx *= drag;
+      p.vy *= drag;
+      p.life -= dt;
+    }
+    for (const d of debris) {
+      d.x = wrap(d.x + d.vx * dt, world.w);
+      d.y = wrap(d.y + d.vy * dt, world.h);
+      d.angle += d.spin * dt;
+      d.life -= dt;
+    }
+  }
+
+  // Bullet vs asteroid: radius broad phase, then the bullet's path over this
+  // step is tested against the asteroid's actual polygon (no tunnelling).
+  function bulletHits(b, a, dt) {
+    const dx = wrapDelta(b.x - a.x, world.w), dy = wrapDelta(b.y - a.y, world.h);
+    const reach = a.rMax + Math.hypot(b.vx, b.vy) * dt;
+    if (dx * dx + dy * dy > reach * reach) return false;
+
+    // Rotate into the asteroid's local space (by -angle).
+    const c = Math.cos(a.angle), s = Math.sin(a.angle);
+    const sx = dx - b.vx * dt, sy = dy - b.vy * dt;
+    return segmentHitsPoly(
+      sx * c + sy * s, -sx * s + sy * c,
+      dx * c + dy * s, -dx * s + dy * c,
+      a.shape
+    );
+  }
+
+  // Ship vs asteroid: radius broad phase, then exact polygon-polygon overlap.
+  function shipHits(a) {
+    const dx = wrapDelta(ship.x - a.x, world.w), dy = wrapDelta(ship.y - a.y, world.h);
+    const reach = a.rMax + CFG.SHIP_RADIUS;
+    if (dx * dx + dy * dy > reach * reach) return false;
+
+    const ca = Math.cos(a.angle), sa = Math.sin(a.angle);
+    const cs = Math.cos(ship.angle), ss = Math.sin(ship.angle);
+    for (let i = 0; i < SHIP_HULL.length; i += 2) {
+      const hx = SHIP_HULL[i], hy = SHIP_HULL[i + 1];
+      const wx = dx + hx * cs - hy * ss, wy = dy + hx * ss + hy * cs;
+      hullScratch[i] = wx * ca + wy * sa;
+      hullScratch[i + 1] = -wx * sa + wy * ca;
+    }
+    return polysIntersect(hullScratch, a.shape);
+  }
+
+  function handleCollisions(dt) {
+    for (const b of bullets) {
+      if (b.life <= 0) continue;
+      for (const a of asteroids) {
+        if (!a.dead && bulletHits(b, a, dt)) {
+          b.life = 0;
+          destroyAsteroid(a, b.vx, b.vy);
+          break;
+        }
+      }
+    }
+
+    if (ship.alive && ship.invuln <= 0) {
+      for (const a of asteroids) {
+        if (!a.dead && shipHits(a)) {
+          destroyAsteroid(a, ship.vx, ship.vy);
+          killShip();
+          break;
+        }
+      }
+    }
+  }
+
+  function updateFlow(dt) {
+    game.waveTime += dt;
+
+    if (asteroids.length === 0) {
+      if (game.waveTimer < 0) game.waveTimer = CFG.WAVE_DELAY;
+      game.waveTimer -= dt;
+      if (game.waveTimer <= 0) nextWave();
+    }
+
+    if (!ship.alive) {
+      if (game.lives <= 0) {
+        game.gameOverTimer -= dt;
+        if (game.gameOverTimer <= 0) gameOver();
+      } else {
+        // Wait for a clear centre, but never longer than a few extra seconds:
+        // the respawn invulnerability covers the rest.
+        game.respawnTimer -= dt;
+        if (game.respawnTimer <= 0 &&
+            (isAreaClear(world.w / 2, world.h / 2, CFG.SAFE_RADIUS) || game.respawnTimer < -3)) {
+          resetShip();
+        }
+      }
+    }
+
+    // The classic two-note heartbeat, speeding up the longer a wave lasts.
+    if (ship.alive && asteroids.length) {
+      game.beatTimer -= dt;
+      if (game.beatTimer <= 0) {
+        Sound.beat(game.beatHigh);
+        game.beatHigh = !game.beatHigh;
+        game.beatTimer = Math.max(0.3, 1.0 - game.waveTime * 0.012);
+      }
+    }
+  }
+
+  function update(dt) {
+    const playing = game.state === 'playing';
+    game.stateTime += dt;
+    game.bannerTime -= dt;
+    game.shake = Math.max(0, game.shake - dt);
+
+    if (playing) updateShip(dt);
+    moveEverything(dt);
+    if (playing) handleCollisions(dt);
+
+    keep(asteroids, notDead);
+    keep(bullets, isAlive);
+    keep(particles, isAlive);
+    keep(debris, isAlive);
+
+    if (playing) updateFlow(dt);
+  }
+
+  // ===========================================================================
+  // Rendering
+  // ===========================================================================
+
+  // Call fn at (x, y) plus every mirrored position needed so an object
+  // straddling an edge is drawn on both sides of the screen.
+  function forEachWrap(x, y, r, fn) {
+    fn(x, y);
+    const ox = x < r ? world.w : x > world.w - r ? -world.w : 0;
+    const oy = y < r ? world.h : y > world.h - r ? -world.h : 0;
+    if (ox) fn(x + ox, y);
+    if (oy) fn(x, y + oy);
+    if (ox && oy) fn(x + ox, y + oy);
+  }
+
+  function tracePoly(pts, x, y, c, s, k = 1) {
+    for (let i = 0; i < pts.length; i += 2) {
+      const px = pts[i] * k, py = pts[i + 1] * k;
+      const wx = x + px * c - py * s, wy = y + px * s + py * c;
+      if (i === 0) ctx.moveTo(wx, wy);
+      else ctx.lineTo(wx, wy);
+    }
+    ctx.closePath();
+  }
+
+  function text(str, x, y, size, weight = 600) {
+    size = Math.max(size, MIN_FONT_PX / view.scale);
+    ctx.font = `${weight} ${size}px ${FONT}`;
+    ctx.fillText(str, x, y);
+  }
+
+  function drawAsteroids() {
+    ctx.beginPath();
+    for (const a of asteroids) {
+      const c = Math.cos(a.angle), s = Math.sin(a.angle);
+      forEachWrap(a.x, a.y, a.rMax, (x, y) => tracePoly(a.shape, x, y, c, s));
+    }
+    ctx.stroke();
+  }
+
+  function drawShip() {
+    if (!ship.alive || game.state === 'title' || game.state === 'gameover') return;
+    if (ship.invuln > 0 && Math.floor(ship.invuln * 8) % 2 === 1) return;  // blink
+
+    const c = Math.cos(ship.angle), s = Math.sin(ship.angle);
+    const flame = ship.thrusting && game.state === 'playing' ? rand(10, 18) : 0;
+
+    ctx.beginPath();
+    forEachWrap(ship.x, ship.y, CFG.SHIP_RADIUS + flame, (x, y) => {
+      tracePoly(SHIP_HULL, x, y, c, s);
+      if (flame) {
+        const bx = -8, by = 4;  // where the flame meets the hull's notch
+        ctx.moveTo(x + bx * c - by * s, y + bx * s + by * c);
+        ctx.lineTo(x + (bx - flame) * c, y + (bx - flame) * s);
+        ctx.lineTo(x + bx * c + by * s, y + bx * s - by * c);
+      }
+    });
+    ctx.stroke();
+  }
+
+  function drawBullets() {
+    ctx.beginPath();
+    for (const b of bullets) {
+      ctx.moveTo(b.x + 2.2, b.y);
+      ctx.arc(b.x, b.y, 2.2, 0, TAU);
+    }
+    ctx.fill();
+  }
+
+  function drawDebris() {
+    for (const d of debris) {
+      const hx = (Math.cos(d.angle) * d.len) / 2, hy = (Math.sin(d.angle) * d.len) / 2;
+      ctx.globalAlpha = clamp(d.life / d.max, 0, 1);
+      ctx.beginPath();
+      ctx.moveTo(d.x - hx, d.y - hy);
+      ctx.lineTo(d.x + hx, d.y + hy);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawParticles() {
+    for (const p of particles) {
+      ctx.globalAlpha = clamp(p.life / p.max, 0, 1);
+      ctx.fillRect(p.x - 1.2, p.y - 1.2, 2.4, 2.4);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawHud() {
+    if (game.state === 'title') return;
+
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    text(String(game.score).padStart(2, '0'), 24, 20, 26);
+
+    ctx.beginPath();
+    for (let i = 0; i < Math.min(game.lives, 10); i++) {
+      tracePoly(SHIP_HULL, 34 + i * 24, 76, 0, -1, 0.8);  // pointing up
+    }
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    text('HI ' + Math.max(game.hiScore, game.score), world.w / 2, 24, 16);
+
+    ctx.textAlign = 'right';
+    text('WAVE ' + game.wave, world.w - 24, 24, 16);
+    if (Sound.muted) text('MUTED', world.w - 24, 46, 14, 400);
+
+    if (game.bannerTime > 0 && game.state === 'playing') {
+      ctx.globalAlpha = clamp(game.bannerTime / 0.5, 0, 1);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      text(game.banner, world.w / 2, world.h * 0.3, 30);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function drawOverlay(now) {
+    const cx = world.w / 2, cy = world.h / 2;
+    const blink = Math.floor(now / 500) % 2 === 0;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    if (game.state === 'title') {
+      text('ASTEROIDS', cx, cy - 110, Math.min(76, world.w / 6.2), 700);
+      if (game.hiScore > 0) text('HI SCORE  ' + game.hiScore, cx, cy - 50, 18);
+      if (blink) text(touchMode ? 'TAP TO START' : 'PRESS ENTER TO START', cx, cy + 10, 22);
+      if (!touchMode) {
+        const rows = [
+          ['← →  /  A D', 'ROTATE'],
+          ['↑  /  W', 'THRUST'],
+          ['SPACE', 'FIRE'],
+          ['↓  /  S  /  H', 'HYPERSPACE'],
+          ['P  /  ESC', 'PAUSE'],
+          ['M', 'MUTE'],
+        ];
+        rows.forEach(([keys, label], i) => {
+          text((keys.padEnd(16) + label).padEnd(26), cx, cy + 75 + i * 24, 15, 400);
+        });
+      }
+    } else if (game.state === 'paused') {
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+      ctx.fillRect(0, 0, world.w, world.h);
+      ctx.fillStyle = COLOR;
+      ctx.shadowBlur = 4 * view.dpr;
+      text('PAUSED', cx, cy - 20, 48, 700);
+      text(touchMode ? 'TAP TO RESUME' : 'PRESS P TO RESUME', cx, cy + 36, 18);
+    } else if (game.state === 'gameover') {
+      text('GAME OVER', cx, cy - 70, Math.min(64, world.w / 7), 700);
+      text('SCORE  ' + game.score, cx, cy - 10, 24);
+      if (game.newHi) text('NEW HIGH SCORE!', cx, cy + 28, 20);
+      if (game.stateTime >= CFG.RESTART_LOCKOUT && blink) {
+        text(touchMode ? 'TAP TO PLAY AGAIN' : 'PRESS ENTER TO PLAY AGAIN', cx, cy + 80, 20);
+      }
+    }
+  }
+
+  function render(now) {
+    const { dpr, scale } = view;
+    const k = dpr * scale;
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    let ox = 0, oy = 0;
+    if (game.shake > 0) {
+      const m = game.shake * 14;
+      ox = rand(-m, m);
+      oy = rand(-m, m);
+    }
+    ctx.setTransform(k, 0, 0, k, ox * k, oy * k);
+
+    ctx.lineWidth = (1.4 + 0.5 * scale) / scale;  // ~1.6-2.3 CSS px on any screen
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = COLOR;
+    ctx.fillStyle = COLOR;
+    ctx.shadowColor = GLOW;
+    ctx.shadowBlur = 6 * dpr;  // shadowBlur ignores the transform, so scale by dpr
+
+    drawAsteroids();
+    drawShip();
+    drawBullets();
+    drawDebris();
+    ctx.shadowBlur = 0;
+    drawParticles();
+
+    ctx.setTransform(k, 0, 0, k, 0, 0);
+    ctx.shadowBlur = 4 * dpr;
+    drawHud();
+    drawOverlay(now);
+  }
+
+  // ===========================================================================
+  // Main loop
+  // ===========================================================================
+  // Frame time is measured each frame and split into equal sub-steps no longer
+  // than CFG.MAX_STEP, so movement is frame-rate independent and fast bullets
+  // never skip past an asteroid, on 30 Hz and 240 Hz displays alike.
+
+  let last = performance.now();
+
+  function frame(now) {
+    let dt = (now - last) / 1000;
+    last = now;
+    if (!(dt > 0)) dt = 0;
+    dt = Math.min(dt, CFG.MAX_FRAME);
+
+    if (game.state !== 'paused' && dt > 0) {
+      const steps = Math.ceil(dt / CFG.MAX_STEP);
+      const h = dt / steps;
+      for (let i = 0; i < steps; i++) update(h);
+    }
+
+    Sound.setThrust(game.state === 'playing' && ship.alive && ship.thrusting);
+    render(now);
+    requestAnimationFrame(frame);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  spawnLarge(5);  // drifting rocks behind the title screen
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
