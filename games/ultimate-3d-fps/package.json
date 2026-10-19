@@ -1,0 +1,68 @@
+{
+  "name": "ultimate-3d-fps",
+  "productName": "Ultimate 3D FPS",
+  "version": "0.1.0",
+  "description": "Atmospheric first-person prototype built with Three.js, cannon-es and Electron. Every texture is procedurally generated at startup.",
+  "private": true,
+  "license": "UNLICENSED",
+  "author": "edgarinternet14-boop",
+  "homepage": "https://github.com/edgarinternet14-boop/Games/tree/main/games/ultimate-3d-fps",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/edgarinternet14-boop/Games.git",
+    "directory": "games/ultimate-3d-fps"
+  },
+  "main": "main.js",
+  "scripts": {
+    "bundle": "esbuild src/js/main.js --bundle --format=iife --target=es2022 --minify --sourcemap --legal-comments=none --outfile=src/bundle/game.js",
+    "dev": "esbuild src/js/main.js --bundle --format=iife --target=es2022 --sourcemap --outfile=src/bundle/game.js --servedir=src --watch=forever",
+    "icon": "node scripts/generate-icon.mjs",
+    "start": "npm run bundle && electron .",
+    "build": "npm run bundle && npm run icon && electron-builder --win portable --x64 --publish never",
+    "build:dir": "npm run bundle && npm run icon && electron-builder --dir --publish never"
+  },
+  "dependencies": {
+    "cannon-es": "0.20.0",
+    "postprocessing": "6.39.5",
+    "three": "0.181.2"
+  },
+  "devDependencies": {
+    "electron": "44.5.0",
+    "electron-builder": "26.15.3",
+    "esbuild": "0.28.2"
+  },
+  "build": {
+    "appId": "io.github.edgarinternet14boop.ultimate3dfps",
+    "productName": "Ultimate 3D FPS",
+    "copyright": "Copyright © 2026 edgarinternet14-boop",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "package.json",
+      "src/index.html",
+      "src/css/**/*",
+      "src/bundle/**/*",
+      "!src/bundle/**/*.map",
+      "!node_modules/**/*"
+    ],
+    "asar": true,
+    "compression": "normal",
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "portable": {
+      "artifactName": "UltimateFPS-${version}-portable.${ext}"
+    }
+  }
+}

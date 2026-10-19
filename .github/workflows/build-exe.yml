@@ -1,0 +1,103 @@
+# Builds games/ultimate-3d-fps into a portable Windows .exe with
+# electron-builder on every push that touches the game, uploads it as a
+# workflow artifact and publishes it as a GitHub Release asset.
+#
+# GitHub only runs workflows from the repository root, which is why this file
+# lives here rather than inside games/ultimate-3d-fps/.
+
+name: Build Windows EXE (Ultimate 3D FPS)
+
+on:
+  push:
+    paths:
+      - 'games/ultimate-3d-fps/**'
+      - '.github/workflows/build-exe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write # create releases and tags
+
+concurrency:
+  group: build-exe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    name: Package portable .exe
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: games/ultimate-3d-fps
+        shell: bash
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: games/ultimate-3d-fps/package-lock.json
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build portable .exe
+        run: npm run build
+
+      - name: Collect build info
+        id: meta
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          exe="$(ls dist/*.exe | head -n 1)"
+          if [ -z "$exe" ]; then
+            echo "::error::electron-builder produced no .exe"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "exe=games/ultimate-3d-fps/$exe" >> "$GITHUB_OUTPUT"
+          echo "tag=ultimate-3d-fps-v$version-build.$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "Built $exe ($(du -h "$exe" | cut -f1))"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: UltimateFPS-${{ steps.meta.outputs.version }}-build.${{ github.run_number }}-windows-x64
+          path: ${{ steps.meta.outputs.exe }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          EXE: ${{ steps.meta.outputs.exe }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          BRANCH: ${{ github.ref_name }}
+          # Builds from the default branch become the "latest" release;
+          # builds from any other branch are published as pre-releases.
+          PRERELEASE: ${{ github.ref_name != github.event.repository.default_branch }}
+        run: |
+          if [ "$PRERELEASE" = "true" ]; then
+            channel=(--prerelease)
+          else
+            channel=(--latest)
+          fi
+          notes="$(printf '%s\n' \
+            "Automated Windows x64 build of **Ultimate 3D FPS** (portable, no installer)." \
+            "" \
+            "- Branch: \`$BRANCH\`" \
+            "- Commit: $GITHUB_SHA" \
+            "- Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            "" \
+            "Download the \`.exe\` below and run it. The build is unsigned, so Windows SmartScreen may ask you to confirm (More info > Run anyway).")"
+          gh release create "$TAG" "$EXE" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Ultimate 3D FPS v$VERSION (build $GITHUB_RUN_NUMBER)" \
+            --notes "$notes" \
+            "${channel[@]}"

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ultimate 3D FPS — Sector 7</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <canvas id="viewport" tabindex="0" aria-label="Game view"></canvas>
+
+  <div id="hud" class="hidden" aria-hidden="true">
+    <div id="crosshair">
+      <i class="ch ch-top"></i>
+      <i class="ch ch-bottom"></i>
+      <i class="ch ch-left"></i>
+      <i class="ch ch-right"></i>
+      <b class="ch-dot"></b>
+    </div>
+    <div id="status"></div>
+    <div id="ammo">
+      <div class="ammo-count"><span id="ammo-mag">30</span><span class="ammo-sep">/</span><span class="ammo-reserve">∞</span></div>
+      <div class="ammo-label">AR-7 · FULL AUTO</div>
+    </div>
+    <div id="hints">
+      <span><kbd>W A S D</kbd> move</span>
+      <span><kbd>Shift</kbd> sprint</span>
+      <span><kbd>Space</kbd> jump</span>
+      <span><kbd>Ctrl</kbd>/<kbd>C</kbd> crouch</span>
+      <span><kbd>LMB</kbd> fire</span>
+      <span><kbd>RMB</kbd> aim</span>
+      <span><kbd>R</kbd> reload</span>
+      <span><kbd>F</kbd> flashlight</span>
+      <span><kbd>Esc</kbd> pause</span>
+    </div>
+    <div id="fps" hidden></div>
+  </div>
+
+  <section id="loading" class="screen">
+    <div class="brand">
+      <p class="kicker">Ultimate 3D FPS</p>
+      <h1>SECTOR<span>7</span></h1>
+    </div>
+    <div class="progress"><div id="progress-bar"></div></div>
+    <p id="progress-label">Initialising…</p>
+    <p class="fineprint">Every texture, sound and light cookie is generated procedurally. No asset files.</p>
+  </section>
+
+  <section id="title" class="screen hidden">
+    <div class="brand">
+      <p class="kicker">Ultimate 3D FPS</p>
+      <h1>SECTOR<span>7</span></h1>
+      <p class="tagline">The lights failed three days ago. Something is still dripping.</p>
+    </div>
+    <button class="cta" type="button">Click to enter</button>
+    <div class="controls">
+      <div><kbd>W A S D</kbd><span>Move</span></div>
+      <div><kbd>Mouse</kbd><span>Look</span></div>
+      <div><kbd>Shift</kbd><span>Sprint</span></div>
+      <div><kbd>Space</kbd><span>Jump</span></div>
+      <div><kbd>Ctrl</kbd><span>Crouch (hold)</span></div>
+      <div><kbd>C</kbd><span>Crouch (toggle)</span></div>
+      <div><kbd>LMB</kbd><span>Fire</span></div>
+      <div><kbd>RMB</kbd><span>Aim down sights</span></div>
+      <div><kbd>R</kbd><span>Reload</span></div>
+      <div><kbd>F</kbd><span>Flashlight</span></div>
+      <div><kbd>F3</kbd><span>FPS counter</span></div>
+      <div><kbd>Esc</kbd><span>Pause / settings</span></div>
+    </div>
+  </section>
+
+  <section id="pause" class="screen hidden">
+    <div class="panel">
+      <h2>Paused</h2>
+      <button id="btn-resume" class="cta" type="button">Resume</button>
+      <p id="pause-note" class="note"></p>
+      <div class="settings">
+        <label>
+          <span>Graphics</span>
+          <select id="opt-preset"></select>
+        </label>
+        <label>
+          <span>Mouse sensitivity <output id="opt-sens-value"></output></span>
+          <input id="opt-sens" type="range" min="0.4" max="6" step="0.1">
+        </label>
+        <label>
+          <span>Field of view <output id="opt-fov-value"></output></span>
+          <input id="opt-fov" type="range" min="60" max="100" step="1">
+        </label>
+        <label>
+          <span>Volume <output id="opt-volume-value"></output></span>
+          <input id="opt-volume" type="range" min="0" max="1" step="0.05">
+        </label>
+        <label class="check">
+          <input id="opt-invert" type="checkbox">
+          <span>Invert mouse Y</span>
+        </label>
+      </div>
+      <button id="btn-quit" class="secondary" type="button">Quit to desktop</button>
+    </div>
+  </section>
+
+  <section id="error" class="screen hidden">
+    <div class="panel">
+      <h2>Something went wrong</h2>
+      <pre id="error-text"></pre>
+    </div>
+  </section>
+
+  <script src="bundle/game.js"></script>
+</body>
+</html>
