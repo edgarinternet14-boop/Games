@@ -1,0 +1,20 @@
+{
+  "name": "dunebound-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Authoritative real-time multiplayer server for Dunebound: players, blocks, pyramid grid and server-simulated pets.",
+  "main": "server.js",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "check": "node --check server.js && node --check gameLogic.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "socket.io": "^4.8.1"
+  }
+}

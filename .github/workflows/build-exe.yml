@@ -1,0 +1,127 @@
+# Builds the Dunebound desktop client into Windows executables on every push
+# and publishes them to the GitHub Releases tab.
+#
+#   * Pushes to any branch -> release tagged v<version>-build.<run number>
+#     (marked as a pre-release unless the push is to the default branch)
+#   * Pushes of a tag v*    -> a full release named after that tag
+#
+# Each release carries two files:
+#   Dunebound-Setup-<version>.exe     NSIS installer
+#   Dunebound-Portable-<version>.exe  standalone executable, no install needed
+
+name: Build Windows EXE
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-exe-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  server-check:
+    name: Server smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install server dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Syntax check
+        working-directory: server
+        run: npm run check
+
+      - name: Boot the server and probe /health
+        working-directory: server
+        run: |
+          PORT=3999 SERVE_WEB_CLIENT=0 DATA_DIR="$RUNNER_TEMP/dunebound-data" node server.js > "$RUNNER_TEMP/server.log" 2>&1 &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:3999/health > "$RUNNER_TEMP/health.json"; then break; fi
+            sleep 0.5
+          done
+          cat "$RUNNER_TEMP/server.log"
+          grep -q '"status":"ok"' "$RUNNER_TEMP/health.json"
+          kill "$SERVER_PID"
+
+  build-windows:
+    name: Build Windows installer and portable EXE
+    needs: server-check
+    runs-on: windows-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false' # no code-signing certificate in CI
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install client dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Build executables with electron-builder
+        working-directory: client
+        run: npx electron-builder --win --x64 --publish never
+
+      - name: Work out release tag
+        id: meta
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./client/package.json').version")
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "name=Dunebound $GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v$VERSION-build.$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "name=Dunebound $VERSION (build $GITHUB_RUN_NUMBER, $GITHUB_REF_NAME)" >> "$GITHUB_OUTPUT"
+          fi
+          ls -l client/dist/*.exe
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dunebound-windows-${{ steps.meta.outputs.tag }}
+          path: client/dist/*.exe
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') && github.ref_name != github.event.repository.default_branch }}
+          fail_on_unmatched_files: true
+          files: client/dist/*.exe
+          body: |
+            Automated Windows build of `${{ github.sha }}` from `${{ github.ref_name }}`.
+
+            | File | What it is |
+            | --- | --- |
+            | `Dunebound-Setup-*.exe` | Installer (Start menu + desktop shortcut) |
+            | `Dunebound-Portable-*.exe` | Standalone executable, no installation needed |
+
+            **Playing:** start the server (`cd server && npm install && npm start`), launch Dunebound,
+            and enter the server address (default `http://localhost:3000`, or `http://<host-ip>:3000` on a LAN).
