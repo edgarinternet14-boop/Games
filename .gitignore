@@ -1,0 +1,14 @@
+# Dependencies
+node_modules/
+
+# Electron build output
+client/dist/
+
+# Server save data (world + player profiles)
+server/data/
+
+# Logs and OS clutter
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db

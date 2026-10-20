@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'sha256-E8XkX5qvfSgGPcgVmI2N38dEKSKVIzYCFmBzu7G8TWs='; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' ws: wss: http: https:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>Dunebound</title>
+    <link rel="stylesheet" href="css/style.css" />
+    <!-- If you edit the import map, update its sha256 hash in the Content-Security-Policy above. -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "../node_modules/three/build/three.module.js",
+          "three/addons/": "../node_modules/three/examples/jsm/",
+          "socket.io-client": "../node_modules/socket.io-client/dist/socket.io.esm.min.js"
+        }
+      }
+    </script>
+    <script type="module" src="js/game.js"></script>
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <div id="vignette"></div>
+
+    <section id="loading" class="screen">
+      <div class="loading-inner">
+        <div class="sigil" aria-hidden="true"></div>
+        <h1 class="logo">DUNEBOUND</h1>
+        <div class="bar"><div id="loading-bar"></div></div>
+        <p id="loading-text">Preparing the sands&hellip;</p>
+      </div>
+    </section>
+
+    <section id="menu" class="screen hidden">
+      <div class="menu-card">
+        <div class="sigil small" aria-hidden="true"></div>
+        <h1 class="logo">DUNEBOUND</h1>
+        <p class="tagline">Haul stone. Grow strong. Raise the eternal pyramid together.</p>
+        <form id="join-form" autocomplete="off">
+          <label class="field">
+            <span>Builder name</span>
+            <input id="name-input" maxlength="16" required spellcheck="false" />
+          </label>
+          <div class="field">
+            <span>Sash colour</span>
+            <div id="swatches" class="swatches"></div>
+          </div>
+          <label class="field">
+            <span>Server address</span>
+            <input id="server-input" spellcheck="false" placeholder="http://localhost:3000" />
+          </label>
+          <button id="play-btn" class="btn primary" type="submit">Enter the Sands</button>
+        </form>
+        <p id="menu-status" class="status" role="status" aria-live="polite"></p>
+        <div class="menu-footer">
+          <button id="menu-settings-btn" class="btn ghost" type="button">Settings</button>
+          <button id="quit-btn" class="btn ghost" type="button">Quit</button>
+        </div>
+        <ul class="keys">
+          <li><kbd>WASD</kbd> Move</li>
+          <li><kbd>Mouse</kbd> Look</li>
+          <li><kbd>Space</kbd> Jump</li>
+          <li><kbd>E</kbd> / <kbd>Click</kbd> Interact</li>
+          <li><kbd>Enter</kbd> Chat</li>
+          <li><kbd>Tab</kbd> Builders</li>
+          <li><kbd>Esc</kbd> Menu</li>
+          <li><kbd>F11</kbd> Fullscreen</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="hud" class="hidden">
+      <div id="stats" class="panel">
+        <div class="gold-row">
+          <span class="coin" aria-hidden="true"></span>
+          <span id="gold">0</span>
+          <span id="gold-delta"></span>
+        </div>
+        <div class="stat-row"><span class="label">Strength</span><span id="stat-str">1.0</span></div>
+        <div class="stat-row"><span class="label">Speed</span><span id="stat-spd">1.0</span></div>
+        <div class="stat-row"><span class="label">Pace</span><span id="stat-move">6.0 m/s</span></div>
+        <div class="stat-row"><span class="label">Carrying</span><span id="stat-carry">0 / 1</span></div>
+        <div class="stat-row"><span class="label">Pets</span><span id="stat-pets">0 / 4</span></div>
+        <div class="stat-row"><span class="label">Blocks set</span><span id="stat-placed">0</span></div>
+      </div>
+
+      <div id="progress" class="panel">
+        <div class="progress-title"><span>The Great Pyramid</span><span id="progress-count">0 / 650</span></div>
+        <div class="bar"><div id="progress-bar"></div></div>
+        <div class="progress-sub"><span id="progress-layer">Building layer 1 of 12</span><span id="progress-completed"></span></div>
+      </div>
+
+      <div id="net" class="panel small">
+        <span id="net-players">1 builder</span>
+        <span id="net-ping">-- ms</span>
+        <span id="net-fps"></span>
+      </div>
+
+      <div id="prompt" class="hidden"></div>
+      <div id="floaters"></div>
+      <div id="toasts" aria-live="polite"></div>
+
+      <div id="chat">
+        <div id="chat-log"></div>
+        <input id="chat-input" maxlength="160" placeholder="Press Enter to chat" autocomplete="off" spellcheck="false" />
+      </div>
+
+      <div id="board" class="panel hidden">
+        <h2>Builders</h2>
+        <table>
+          <thead>
+            <tr><th>#</th><th>Name</th><th>Blocks</th><th>Pets</th></tr>
+          </thead>
+          <tbody id="board-body"></tbody>
+        </table>
+      </div>
+
+      <button id="lock-hint" class="hidden" type="button">Click to take control</button>
+    </section>
+
+    <section id="shop" class="modal hidden" role="dialog" aria-modal="true" aria-label="The Bazaar">
+      <div class="modal-card wide">
+        <header>
+          <h2>The Bazaar</h2>
+          <div class="gold-row"><span class="coin" aria-hidden="true"></span><span id="shop-gold">0</span></div>
+          <button class="close" type="button" data-close aria-label="Close">&times;</button>
+        </header>
+        <nav class="tabs">
+          <button type="button" data-tab="upgrades" class="active">Upgrades</button>
+          <button type="button" data-tab="pets">Pets</button>
+        </nav>
+        <div id="shop-upgrades" class="grid"></div>
+        <div id="shop-pets" class="grid hidden"></div>
+        <div id="shop-owned"></div>
+        <p class="hint">Gold is earned every time a block is set &mdash; by you, your pets, or any builder on the server.</p>
+      </div>
+    </section>
+
+    <section id="pause" class="modal hidden" role="dialog" aria-modal="true" aria-label="Paused">
+      <div class="modal-card narrow">
+        <h2>Paused</h2>
+        <button id="resume-btn" class="btn primary" type="button">Resume</button>
+        <button id="pause-settings-btn" class="btn" type="button">Settings</button>
+        <button id="leave-btn" class="btn" type="button">Leave server</button>
+        <button id="pause-quit-btn" class="btn ghost" type="button">Quit to desktop</button>
+      </div>
+    </section>
+
+    <section id="settings" class="modal hidden" role="dialog" aria-modal="true" aria-label="Settings">
+      <div class="modal-card narrow">
+        <h2>Settings</h2>
+        <label class="field">
+          <span>Graphics quality</span>
+          <select id="set-quality">
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="ultra">Ultra (ambient occlusion)</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Mouse sensitivity <output id="set-sens-val"></output></span>
+          <input id="set-sens" type="range" min="0.3" max="3" step="0.1" />
+        </label>
+        <label class="field">
+          <span>Master volume <output id="set-vol-val"></output></span>
+          <input id="set-vol" type="range" min="0" max="1" step="0.05" />
+        </label>
+        <label class="check"><input id="set-invert" type="checkbox" /> Invert mouse Y</label>
+        <label class="check"><input id="set-fps" type="checkbox" /> Show FPS</label>
+        <button id="settings-done" class="btn primary" type="button">Done</button>
+      </div>
+    </section>
+
+    <section id="banner" class="hidden" aria-live="polite">
+      <div class="banner-inner">
+        <h2 id="banner-title"></h2>
+        <p id="banner-text"></p>
+      </div>
+    </section>
+
+    <section id="overlay" class="hidden">
+      <div class="overlay-inner">
+        <div class="spinner" aria-hidden="true"></div>
+        <p id="overlay-text">Reconnecting&hellip;</p>
+      </div>
+    </section>
+  </body>
+</html>

@@ -1,0 +1,84 @@
+{
+  "name": "dunebound",
+  "productName": "Dunebound",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dunebound - a multiplayer pyramid-building desktop game (Electron + Three.js client).",
+  "main": "main.js",
+  "author": "Dunebound Contributors",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "start:windowed": "electron . --windowed",
+    "dev": "electron . --dev --windowed",
+    "dist": "electron-builder --win --x64 --publish never",
+    "dist:dir": "electron-builder --dir --publish never"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.8.1",
+    "three": "0.181.2"
+  },
+  "devDependencies": {
+    "electron": "44.7.2",
+    "electron-builder": "26.15.3"
+  },
+  "homepage": "https://github.com/edgarinternet14-boop/Games",
+  "build": {
+    "appId": "com.dunebound.game",
+    "productName": "Dunebound",
+    "copyright": "Copyright (c) Dunebound Contributors",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "package.json",
+      "src/**/*",
+      {
+        "from": "node_modules/three/examples/jsm",
+        "to": "node_modules/three/examples/jsm",
+        "filter": [
+          "**/*.js"
+        ]
+      }
+    ],
+    "asar": true,
+    "publish": null,
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Dunebound",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-Portable-${version}.${ext}"
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "target": [
+        "dir"
+      ],
+      "category": "Game"
+    }
+  }
+}
