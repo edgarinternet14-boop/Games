@@ -131,22 +131,137 @@ export class PyramidGrid {
   }
 }
 
+const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+
+/**
+ * Dense uniform Catmull-Rom sampling of the river's control points, roughly
+ * every `step` metres. Byte-for-byte copy of riverPolyline() in
+ * server/gameLogic.js: keep the two identical so collision matches the water.
+ */
+export function riverPolyline(points, step = 2) {
+  const out = [];
+  const n = points.length;
+  for (let i = 0; i < n - 1; i++) {
+    const p0 = points[Math.max(0, i - 1)];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[Math.min(n - 1, i + 2)];
+    const steps = Math.max(1, Math.ceil(Math.hypot(p2[0] - p1[0], p2[1] - p1[1]) / step));
+    for (let s = 0; s < steps; s++) {
+      const t = s / steps;
+      const t2 = t * t;
+      const t3 = t2 * t;
+      const f = (a, b, c, d) => 0.5 * (2 * b + (c - a) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (3 * b - a - 3 * c + d) * t3);
+      out.push([f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]);
+    }
+  }
+  out.push([points[n - 1][0], points[n - 1][1]]);
+  return out;
+}
+
 /** Approximate visual height of each obstacle kind, used only to keep the camera out of props. */
-const CAMERA_HEIGHTS = { pile: 5.8, obelisk: 12.5, counter: 1.3, rack: 2.9, sundial: 1.15, rock: 6.5, brazier: 1.4 };
+const CAMERA_HEIGHTS = { pile: 5.8, obelisk: 12.5, counter: 1.3, rack: 2.9, sundial: 1.15, rock: 6.5, brazier: 1.4, parapet: 1.8 };
 
 export class HeightField {
   constructor(config) {
     this.origin = config.nav.origin;
     this.size = config.nav.size;
     this.blocked = config.blocked;
-    this.static = new Float32Array(this.size * this.size);
-    this.visual = new Float32Array(this.size * this.size);
-    this.h = new Float32Array(this.size * this.size);
+    const n = this.size * this.size;
+    this.static = new Float32Array(n);
+    this.visual = new Float32Array(n);
+    this.h = new Float32Array(n);
+    this.speed = new Float32Array(n).fill(1); // terrain speed multiplier (fords)
+    this.riverDist = new Float32Array(n).fill(Infinity); // distance to the river centre line
+    this.bridges = [];
     for (const o of config.obstacles) {
       this._raster(this.static, o.x0, o.z0, o.x1, o.z1, o.h);
       this._raster(this.visual, o.x0, o.z0, o.x1, o.z1, CAMERA_HEIGHTS[o.kind] || 0);
     }
+    if (config.river) this._rasterRiver(config.river, config.crossings || []);
     this.h.set(this.static);
+  }
+
+  /** Mirror of the server's river rasterisation: water blocks, bridges ramp up, fords slow you down. */
+  _rasterRiver(river, crossings) {
+    const line = riverPolyline(river.points);
+    const reach = river.halfWidth + river.bank + 4;
+    const size = this.size;
+    for (let s = 0; s < line.length - 1; s++) {
+      const ax = line[s][0];
+      const az = line[s][1];
+      const bx = line[s + 1][0];
+      const bz = line[s + 1][1];
+      const cx0 = Math.max(0, Math.floor(Math.min(ax, bx) - reach - this.origin));
+      const cx1 = Math.min(size - 1, Math.ceil(Math.max(ax, bx) + reach - this.origin));
+      const cz0 = Math.max(0, Math.floor(Math.min(az, bz) - reach - this.origin));
+      const cz1 = Math.min(size - 1, Math.ceil(Math.max(az, bz) + reach - this.origin));
+      if (cx0 > cx1 || cz0 > cz1) continue;
+      const dx = bx - ax;
+      const dz = bz - az;
+      const len2 = dx * dx + dz * dz || 1;
+      for (let cz = cz0; cz <= cz1; cz++) {
+        const pz = cz + this.origin + 0.5;
+        for (let cx = cx0; cx <= cx1; cx++) {
+          const px = cx + this.origin + 0.5;
+          const t = clamp(((px - ax) * dx + (pz - az) * dz) / len2, 0, 1);
+          const d = Math.hypot(px - (ax + dx * t), pz - (az + dz * t));
+          const i = cz * size + cx;
+          if (d < this.riverDist[i]) this.riverDist[i] = d;
+        }
+      }
+    }
+    for (let i = 0; i < this.riverDist.length; i++) {
+      if (this.riverDist[i] < river.halfWidth) this.static[i] = this.blocked;
+    }
+    this.bridges = crossings.filter((c) => c.kind === 'bridge');
+    for (const c of crossings) {
+      const cx0 = Math.max(0, Math.floor(c.x0 - this.origin));
+      const cx1 = Math.min(size, Math.ceil(c.x1 - this.origin));
+      const cz0 = Math.max(0, Math.floor(c.z0 - this.origin));
+      const cz1 = Math.min(size, Math.ceil(c.z1 - this.origin));
+      for (let cz = cz0; cz < cz1; cz++) {
+        const pz = cz + this.origin + 0.5;
+        for (let cx = cx0; cx < cx1; cx++) {
+          const i = cz * size + cx;
+          if (c.kind === 'bridge') {
+            const ramp = Math.min(clamp((pz - c.z0) / c.ramp, 0, 1), clamp((c.z1 - pz) / c.ramp, 0, 1));
+            this.static[i] = Math.round(c.deck * ramp * 100) / 100;
+          } else if (c.kind === 'ford' && this.riverDist[i] < river.halfWidth) {
+            this.static[i] = 0;
+            this.speed[i] = c.slow;
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Height of the smooth bridge deck the engine draws at a point, or null off the bridges. The
+   * field itself climbs a ramp in 1 m steps; this is for placing bodies on it, never for physics.
+   */
+  deckHeightAt(x, z) {
+    for (const c of this.bridges) {
+      if (x < c.x0 || x >= c.x1 || z < c.z0 || z >= c.z1) continue;
+      return c.deck * Math.min(clamp((z - c.z0) / c.ramp, 0, 1), clamp((c.z1 - z) / c.ramp, 0, 1));
+    }
+    return null;
+  }
+
+  /** Terrain speed multiplier at a point (1 everywhere except fords). */
+  speedAt(x, z) {
+    const cx = Math.floor(x - this.origin);
+    const cz = Math.floor(z - this.origin);
+    if (cx < 0 || cz < 0 || cx >= this.size || cz >= this.size) return 1;
+    return this.speed[cz * this.size + cx];
+  }
+
+  /** Distance from a point to the river's centre line (Infinity far from it). */
+  riverDistanceAt(x, z) {
+    const cx = Math.floor(x - this.origin);
+    const cz = Math.floor(z - this.origin);
+    if (cx < 0 || cz < 0 || cx >= this.size || cz >= this.size) return Infinity;
+    return this.riverDist[cz * this.size + cx];
   }
 
   _raster(arr, x0, z0, x1, z1, h) {
@@ -158,6 +273,22 @@ export class HeightField {
       for (let cx = cx0; cx < cx1; cx++) {
         const i = cz * this.size + cx;
         if (h > arr[i]) arr[i] = h;
+      }
+    }
+  }
+
+  /** Raises the camera floor over impassable cells under the engine's props: [x0, z0, x1, z1, top] boxes. */
+  addCameraBoxes(boxes) {
+    for (const [x0, z0, x1, z1, top] of boxes) {
+      const cx0 = Math.max(0, Math.floor(x0 - this.origin));
+      const cz0 = Math.max(0, Math.floor(z0 - this.origin));
+      const cx1 = Math.min(this.size, Math.ceil(x1 - this.origin));
+      const cz1 = Math.min(this.size, Math.ceil(z1 - this.origin));
+      for (let cz = cz0; cz < cz1; cz++) {
+        for (let cx = cx0; cx < cx1; cx++) {
+          const i = cz * this.size + cx;
+          if (this.static[i] >= this.blocked && top > this.visual[i]) this.visual[i] = top;
+        }
       }
     }
   }

@@ -8,6 +8,9 @@
  */
 import { io } from 'socket.io-client';
 
+/** Network protocol version; must match the server's CONFIG.version (it rejects mismatches with a reason). */
+export const PROTOCOL_VERSION = 2;
+
 const RELAYED_EVENTS = [
   'pj', // player joined
   'pl', // player left
@@ -132,7 +135,7 @@ export class NetworkClient {
   }
 
   async join() {
-    const welcome = await this.request('join', this.profile, 6000);
+    const welcome = await this.request('join', { ...this.profile, protocol: PROTOCOL_VERSION }, 6000);
     if (!welcome || !welcome.ok) throw new Error((welcome && welcome.reason) || 'The server refused to let you join.');
     this.joined = true;
     this.cid = 0;

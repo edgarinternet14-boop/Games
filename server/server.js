@@ -29,7 +29,9 @@ const SERVE_WEB_CLIENT = process.env.SERVE_WEB_CLIENT !== '0';
 const TICK_MS = 1000 / CONFIG.tickRate;
 const SAVE_INTERVAL_MS = 30000;
 
-const ANIM_MAX = 5; // 0 idle, 1 walk, 2 airborne, 3 lifting, 4 placing, 5 picking up
+// 0 idle, 1 walk/run, 2 airborne, 3 lifting, 4 placing, 5 picking up,
+// 6 gliding and 7 grappling are reserved for the Phase 2 traversal tools.
+const ANIM_MAX = 7;
 const PET_IDLE = 0;
 const PET_MOVING = 1;
 const PET_LOADING = 2;
@@ -64,6 +66,8 @@ class Player {
     this.lastRepAt = 0;
     this.lastPickupAt = 0;
     this.lastPlaceAt = 0;
+    this.carryChangedAt = 0; // pickup/place time; moves in flight keep the old speed briefly
+    this.moveBudget = 4; // metres of travel the player may still cover (see onMove)
     this.trackDist = 0;
     this.chatTimes = [];
     this.selfDirty = true;
@@ -344,9 +348,17 @@ class GameServer {
   onJoin(socket, data, ack) {
     if (typeof ack !== 'function') return;
     if (socket.data.player) return ack({ ok: false, reason: 'Already joined.' });
-    if (!data || typeof data !== 'object' || !L.isToken(data.token)) {
-      return ack({ ok: false, reason: 'Invalid profile token.' });
+    if (!data || typeof data !== 'object') return ack({ ok: false, reason: 'Invalid join request.' });
+    if (data.protocol !== CONFIG.version) {
+      const newer = Number.isFinite(data.protocol) && data.protocol > CONFIG.version;
+      return ack({
+        ok: false,
+        reason: newer
+          ? `This server runs an older version of Dunebound (protocol ${CONFIG.version}). Ask the host to update it.`
+          : `This server runs a newer version of Dunebound (protocol ${CONFIG.version}). Please update your game.`,
+      });
     }
+    if (!L.isToken(data.token)) return ack({ ok: false, reason: 'Invalid profile token.' });
     const tokenHash = crypto.createHash('sha256').update(data.token).digest('hex');
     const existing = this.byToken.get(tokenHash);
     if (existing) {
@@ -427,6 +439,8 @@ class GameServer {
   }
 
   correct(p) {
+    // The travel budget is deliberately NOT refilled here: an honest client recovers from the
+    // snapped position as the budget refills with time, while a cheater gains nothing per correction.
     p.cid++;
     p.socket.emit('correction', { x: round2(p.x), y: round2(p.y), z: round2(p.z), cid: p.cid });
   }
@@ -440,16 +454,26 @@ class GameServer {
     if (cid !== p.cid) return; // stale move sent before the client applied a correction
 
     const t = now();
-    const dt = L.clamp((t - p.lastMoveAt) / 1000, 0.016, 1);
+    const dt = L.clamp((t - p.lastMoveAt) / 1000, 0, 1);
     p.lastMoveAt = t;
 
     const half = CONFIG.worldHalf;
     const nx = L.clamp(x, -half, half);
     const nz = L.clamp(z, -half, half);
-    const maxSpeed = L.moveSpeed(p.stats);
-    const allowed = maxSpeed * dt * 1.5 + 0.6;
+    // Carry weight is enforced here too: a loaded builder may not move at unloaded speed.
+    const inGrace = t - p.carryChangedAt < CONFIG.player.carry.graceMs;
+    const carryMul = inGrace ? 1 : L.playerCarryFactor(p.carry.length, L.carryCapacity(p.stats));
+    // Terrain slowdown (the Reed Ford) is authoritative too; the max of start and end cells keeps the
+    // ford's edges lenient while the client's speed damps in or out.
+    const terrainMul = Math.max(this.field.speedAt(p.x, p.z), this.field.speedAt(nx, nz));
+    const maxSpeed = L.moveSpeed(p.stats) * carryMul * terrainMul;
+    // Distance budget: refills with real elapsed time at the allowed pace (+15 % slack) and can bank
+    // up to ~1.2 s of travel, so network stalls and bunched packets pass but sustained over-speed does not.
+    const cap = maxSpeed * 1.2 + 1;
+    p.moveBudget = Math.min(cap, p.moveBudget + maxSpeed * dt * 1.15);
     const dist = Math.hypot(nx - p.x, nz - p.z);
-    if (dist > allowed) return this.correct(p);
+    if (dist > p.moveBudget) return this.correct(p);
+    p.moveBudget -= dist;
 
     const step = CONFIG.player.stepHeight;
     const ground = this.field.heightAt(nx, nz);
@@ -488,6 +512,7 @@ class GameServer {
     if (room <= 0) return reply({ ok: false, reason: 'Your arms are full. Train Strength or buy a harness to carry more.' });
     if (this.pile.length === 0) return reply({ ok: false, reason: 'The pile is empty. Quarry workers are cutting more stone.' });
     p.lastPickupAt = t;
+    p.carryChangedAt = t;
     const take = Math.min(room, this.pile.length);
     const moved = this.pile.splice(this.pile.length - take, take);
     p.carry.push(...moved);
@@ -513,6 +538,7 @@ class GameServer {
       return reply({ ok: false, reason: 'Too far away to set that block.' });
     }
     p.lastPlaceAt = t;
+    p.carryChangedAt = t;
     p.anim = 4;
     const blockId = p.carry.pop();
     const reward = this.commitPlacement(slot, blockId, 'p', p.id, p, p.carry);
@@ -695,10 +721,13 @@ class GameServer {
   planPath(pet, isGoal, heuristic) {
     if (this.pathBudget <= 0) return 'deferred';
     this.pathBudget--;
-    const path = this.paths.find(pet.x, pet.z, isGoal, heuristic, 15000);
+    // The quarry is across the Nile, so routes are long and detour via a crossing.
+    const path = this.paths.find(pet.x, pet.z, isGoal, heuristic, 60000);
     if (!path) return null;
     pet.path = path;
-    pet.pathIdx = 1; // the first waypoint is the pet's own cell
+    // The first waypoint is the centre of the pet's own cell. Line of sight was checked from that
+    // centre, so an off-centre pet walks to it first instead of cutting a corner into an obstacle.
+    pet.pathIdx = Math.hypot(path[0].x - pet.x, path[0].z - pet.z) > 0.25 ? 0 : 1;
     return path;
   }
 
@@ -769,7 +798,7 @@ class GameServer {
     const dx = wp.x - pet.x;
     const dz = wp.z - pet.z;
     const dist = Math.hypot(dx, dz);
-    const step = speed * dt;
+    const step = speed * dt * this.field.speedAt(pet.x, pet.z);
     let nx;
     let nz;
     if (dist <= step) {
@@ -966,7 +995,7 @@ class GameServer {
       }
     }
 
-    this.pathBudget = 4;
+    this.pathBudget = 3;
     for (const pet of this.pets.values()) this.updatePet(pet, dt, t);
 
     if (this.players.size > 0) {

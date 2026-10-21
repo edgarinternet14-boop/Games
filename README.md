@@ -2,7 +2,7 @@
 
 **Haul stone. Grow strong. Raise the eternal pyramid together.**
 
-Dunebound is a multiplayer 3D desktop game. Players lift heavy limestone blocks from a shared quarry, carry them across the desert and set them into one giant pyramid that every player on the server builds together. You train Strength to carry more and Speed to run faster, spend the gold you earn at the Bazaar, and buy pets that haul blocks for you.
+Dunebound is a multiplayer 3D desktop game. Players lift heavy limestone blocks from a shared quarry on the far bank of the Nile, haul them across the river and the desert, and set them into one giant pyramid that every player on the server builds together. You train Strength to carry more and Speed to run faster, spend the gold you earn at the Bazaar, and buy pets that haul blocks for you.
 
 - **Authoritative Node.js server** (Express + Socket.io). It owns every player position, every block (in the pile, carried, or placed), the pyramid grid, the economy, and the pets.
 - **Server-simulated pets.** Pets run a state machine with A\* pathfinding over the pyramid's height field. Every player sees the same jackal pick up the same block, climb the same steps and set it in the same slot.
@@ -124,18 +124,32 @@ The builds are not code-signed, so Windows SmartScreen may warn on first launch.
 | `Space` | Jump |
 | `E` or left click | Context action: lift blocks, set block, train, open the Bazaar. Hold to repeat. |
 | `Enter` / `T` | Chat |
+| `C` | Character sheet: strength, speed, capacity, pace, upgrades and pets |
 | `Tab` (hold) | Builders leaderboard |
 | `Esc` | Pause menu (resume, settings, leave, quit) |
 | `F11` / `Alt+Enter` | Toggle fullscreen (desktop app) |
+
+The quick-menu dock at the bottom of the screen opens the same panels with the mouse. A waypoint at the edge of the view points to the quarry while your hands are empty and to the pyramid's open layer while you carry, with the distance in metres.
 
 ---
 
 ## How to play
 
+### The map
+
+The pyramid stands at the centre of the dig site, with the training grounds, the Bazaar and the oasis around it. The **quarry** lies about 105 m to the north, on the far bank of **the Nile**, which flows across the whole map from horizon to horizon. Its water is impassable, and the sound of the river grows as you get closer to it. There are two ways across:
+
+| Crossing | Where | How it plays |
+| --- | --- | --- |
+| **Great Causeway** | x ≈ −22, on the paved road | Stone bridge with a raised deck, parapets and ramps at both ends. Full speed. |
+| **Reed Ford** | x ≈ +26, at the end of a dirt trail | Shallow water you can wade through at 62 % speed. |
+
+Hauling blocks across this distance is the core challenge. Phase 2 will add traversal tools such as gliders and grappling hooks. The movement code already reserves states and network animation codes for them, and has an extension point (`LocalPlayer.registerTraversal`) where they will plug in.
+
 ### The building loop
 
 1. **Quarry.** Walk up to the stone pile and press `E` to lift as many blocks as your carry capacity allows. The pile is shared by everyone. Quarry workers cut a new block every 0.45 s, up to 80 in stock.
-2. **Haul.** Every carried block slows you down. A full load moves at 70 % of your pace.
+2. **Haul.** Blocks are heavy. While you carry anything, your sprint gives way to a slow, heavy walk, and your pace drops to `0.62 − 0.17 × (carried / capacity)` of normal: 62 % with a light load, 45 % with a full one. The server enforces this limit too.
 3. **Set.** At the pyramid, a glowing ghost shows the open slot your camera faces. Press `E` to set the block.
    - The pyramid has 12 layers and 650 blocks. Layer *k* is *(12 − k) × (12 − k)* blocks, inset by half a block, so each block rests on the four blocks beneath it.
    - The server only accepts a slot that is **empty**, **fully supported** and **within reach** (about 3.6 m from your hands).
@@ -197,7 +211,7 @@ There are no accounts. On first launch the client creates a random profile token
 ```
 
 - **Tick rate.** The server simulates and broadcasts at 20 Hz. Snapshots are compact arrays sent as volatile emits. Clients estimate server time with ping and pong and render remote players and pets 110 ms in the past, interpolating between snapshots.
-- **Movement.** Clients predict their own movement against the same 1 m height field the server uses. The server rejects any move that is faster than the player's pace allows, walks into a wall taller than one step, or rises faster than a jump. It answers with a `correction`, and the correction id makes the server ignore stale in-flight moves.
+- **Movement.** Clients predict their own movement against the same 1 m height field the server uses, including the river, the causeway deck and the ford. Both sides build it from the same river control points with byte-identical code. The server gives each player a travel budget that refills with real time at their allowed pace (including the carry-weight slowdown, with a short grace period after a pickup or placement). The pace includes the ford's wading slowdown. The budget can bank about 1.2 s of travel, so jittery packets and short network stalls pass but sustained over-speed does not, and a correction never refills it. The server also rejects moves into water, into walls taller than one step, or rising faster than a jump. It answers with a `correction`, and the correction id makes the server ignore stale in-flight moves.
 - **Blocks.** Every block has an id and is always in exactly one place: the pile, a carrier (player or pet), or a pyramid slot. `carry` events tell clients which block ids each carrier holds. Block colour is a deterministic hash of the id, so a block keeps the same colour from the pile to its slot on every client.
 - **Pets.** A pet cycles through `toPile → loading → toPyramid → placing`. It reserves its target slot so two pets never race for the same one. Its route comes from multi-goal A\* (8-way, no corner cutting, step-height limited, string-pulled with a grid line walk). It re-plans when a newly placed block changes the terrain, skips unreachable slots for a while, and recovers when it gets stuck. The server caps path searches per tick.
 - **Abuse resistance.** All payloads are type-checked. A per-socket token bucket limits event rate, chat is limited to 4 messages per 5 s, names and messages are sanitised, messages are capped at 32 KB, and every action has a cooldown. The client renders chat with `textContent`, never HTML.
@@ -206,8 +220,8 @@ There are no accounts. On first launch the client creates a random profile token
 
 | Direction | Event | Payload |
 | --- | --- | --- |
-| C→S | `join` (ack) | `{ name, color, token }` → `{ id, config, state, self }` |
-| C→S | `m` | `[x, y, z, ry, anim, cid]` at 20 Hz |
+| C→S | `join` (ack) | `{ name, color, token, protocol }` → `{ id, config, state, self }`. The server refuses a client whose `protocol` differs from its own (currently 2) and says which side needs updating. |
+| C→S | `m` | `[x, y, z, ry, anim, cid]` at 20 Hz. `anim` is 0 idle, 1 run, 2 air, 3 lift, 4 place, 5 pick up; 6 and 7 are reserved for gliding and grappling. |
 | C→S | `pickup` / `place` / `train` / `buy` / `release` (ack) | `{ slot }`, `{ item }`, `{ pet }` → `{ ok, reason? }` |
 | C→S | `chat` / `tping` (ack) | text / client time → server time |
 | S→C | `s` | `{ t, p: [[id,x,y,z,ry,anim,carry]], q: [[id,x,y,z,ry,state,carry]] }` |
@@ -248,7 +262,7 @@ On first launch the preset is chosen from the detected GPU. You can change it un
 | `DATA_DIR` | `server/data` | Where `world.json` and `profiles.json` are saved |
 | `SERVE_WEB_CLIENT` | `1` | Set to `0` to stop serving the browser build |
 
-Gameplay constants (pyramid size, pile rate, prices, pet stats, zones) live in `server/gameLogic.js`. The client receives the world layout in the `welcome` payload, so changing it there updates every client.
+Gameplay constants (pyramid size, pile position and rate, the river and its crossings, carry weight, prices, pet stats, zones) live in `server/gameLogic.js`. The client receives the world layout in the `welcome` payload, so changing it there updates every client.
 
 **Client options**
 

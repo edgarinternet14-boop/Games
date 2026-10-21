@@ -32,8 +32,8 @@ const PYRAMID = Object.freeze({
 const PILE = Object.freeze({
   minX: -5,
   maxX: 5,
-  minZ: 44,
-  maxZ: 52,
+  minZ: 118, // the quarry sits on the far (north) bank of the Nile, ~105 m from the pyramid
+  maxZ: 126,
   cols: 5, // blocks along x per pile layer
   rows: 4, // blocks along z per pile layer
   maxStock: 80,
@@ -48,6 +48,44 @@ const ZONES = Object.freeze({
   track: { x: -42, z: 44, r: 9.5, inner: 2.2 },
   shop: { x: 42, z: 31, r: 6.5 },
 });
+
+/**
+ * The Nile: a broad river flowing west to east between the pyramid and the
+ * quarry. Control points (x, z) are expanded into a dense Catmull-Rom centre
+ * line by riverPolyline(); client/src/js/pyramid.js runs the identical routine,
+ * so collision on both sides and the rendered water always agree. It extends far
+ * beyond the play area so it flows from horizon to horizon.
+ */
+const RIVER = Object.freeze({
+  name: 'The Nile',
+  points: Object.freeze([
+    [-640, 146],
+    [-430, 124],
+    [-270, 108],
+    [-160, 98],
+    [-90, 88],
+    [-35, 91],
+    [15, 95],
+    [70, 88],
+    [135, 82],
+    [225, 92],
+    [365, 114],
+    [640, 146],
+  ]),
+  halfWidth: 13, // water is impassable within this distance of the centre line
+  bank: 6, // width of the wet, reed-lined bank beyond the water's edge (visual + audio)
+  flow: 1.4, // visual current in m/s along the centre line (towards +x)
+});
+
+/**
+ * Ways across the river. A bridge raises its cells to a walkable deck with
+ * ramps at both ends; a ford is shallow water you can wade through slowly.
+ * Future traversal (gliders, grappling hooks) will add aerial routes on top.
+ */
+const CROSSINGS = Object.freeze([
+  Object.freeze({ kind: 'bridge', name: 'Great Causeway', x0: -26, z0: 70, x1: -18, z1: 114, deck: 0.7, ramp: 7 }),
+  Object.freeze({ kind: 'ford', name: 'Reed Ford', x0: 22, z0: 72, x1: 30, z1: 112, slow: 0.62 }),
+]);
 
 function box(kind, x0, z0, x1, z1, extra) {
   return Object.assign({ kind, x0, z0, x1, z1, h: BLOCKED }, extra || {});
@@ -67,6 +105,13 @@ const OBSTACLES = Object.freeze([
   box('brazier', 7, 20, 8, 21),
   box('brazier', -8, 37, -7, 38),
   box('brazier', 7, 37, 8, 38),
+  // Torches marking both ends of the Great Causeway and the quarry front.
+  box('brazier', -29, 67, -28, 68),
+  box('brazier', -16, 67, -15, 68),
+  box('brazier', -29, 116, -28, 117),
+  box('brazier', -16, 116, -15, 117),
+  box('brazier', -9, 113, -8, 114),
+  box('brazier', 8, 113, 9, 114),
   box('palm', 48, -49, 49, -48, { seed: 1 }),
   box('palm', 67, -45, 68, -44, { seed: 2 }),
   box('palm', 68, -36, 69, -35, { seed: 3 }),
@@ -75,25 +120,42 @@ const OBSTACLES = Object.freeze([
   box('palm', 34, 38, 35, 39, { seed: 6 }),
   box('palm', 49, 38, 50, 39, { seed: 7 }),
   box('palm', -32, 16, -31, 17, { seed: 8 }),
-  box('rock', -24, 66, -14, 74, { seed: 11 }),
-  box('rock', -12, 70, -2, 78, { seed: 12 }),
-  box('rock', 4, 68, 14, 76, { seed: 13 }),
-  box('rock', 16, 64, 26, 72, { seed: 14 }),
-  box('rock', -36, 60, -28, 68, { seed: 15 }),
-  box('rock', 28, 58, 36, 66, { seed: 16 }),
+  // Great Causeway parapets and gate pillars where they stand on land (over the water the cells
+  // are already impassable). Collision only: engine.js draws the stonework.
+  box('parapet', -27, 70, -26, 114),
+  box('parapet', -18, 70, -17, 114),
+  // Quarry cliffs behind the stone pile on the north bank.
+  box('rock', -26, 136, -16, 144, { seed: 11 }),
+  box('rock', -12, 140, -2, 148, { seed: 12 }),
+  box('rock', 4, 138, 14, 146, { seed: 13 }),
+  box('rock', 18, 134, 28, 142, { seed: 14 }),
+  box('rock', -38, 130, -30, 138, { seed: 15 }),
+  box('rock', 30, 128, 38, 136, { seed: 16 }),
+  // Date palms along the Nile banks.
+  box('palm', -62, 70, -61, 71, { seed: 21 }),
+  box('palm', -47, 73, -46, 74, { seed: 22 }),
+  box('palm', 8, 76, 9, 77, { seed: 23 }),
+  box('palm', 44, 71, 45, 72, { seed: 24 }),
+  box('palm', 64, 69, 65, 70, { seed: 25 }),
+  box('palm', -54, 106, -53, 107, { seed: 26 }),
+  box('palm', -40, 110, -39, 111, { seed: 27 }),
+  box('palm', 46, 108, 47, 109, { seed: 28 }),
+  box('palm', 72, 104, 73, 105, { seed: 29 }),
 ]);
 
 const CONFIG = Object.freeze({
-  version: 1,
+  version: 2, // network protocol version; clients send it on join (Phase 1: the Nile map, carry weight)
   tickRate: 20,
   maxPlayers: 32,
-  worldHalf: 110, // players are clamped to [-worldHalf, worldHalf] on x/z
-  nav: Object.freeze({ origin: -128, size: 256 }), // 1 m cells covering [-128, 128)
+  worldHalf: 170, // players are clamped to [-worldHalf, worldHalf] on x/z
+  nav: Object.freeze({ origin: -192, size: 384 }), // 1 m cells covering [-192, 192)
   blocked: BLOCKED,
   pyramid: PYRAMID,
   pile: PILE,
   zones: ZONES,
   obstacles: OBSTACLES,
+  river: RIVER,
+  crossings: CROSSINGS,
   player: Object.freeze({
     radius: 0.35,
     stepHeight: 1.45,
@@ -102,6 +164,9 @@ const CONFIG = Object.freeze({
     gravity: 24,
     jumpVelocity: 7.4,
     maxCapacity: 20,
+    // Carry weight: any block slows a builder sharply, a full load even more.
+    // speed multiplier = base - perLoad * (carried / capacity); 1 when empty-handed.
+    carry: Object.freeze({ base: 0.62, perLoad: 0.17, graceMs: 1200 }),
   }),
   pet: Object.freeze({ reach: 3.0, handHeight: 0.6, maxPerPlayer: 4, maxGlobal: 64 }),
   economy: Object.freeze({ completionBonus: 500, completionBonusPerPyramid: 100, resetDelay: 12 }),
@@ -241,6 +306,36 @@ class PyramidGrid {
 }
 
 // ---------------------------------------------------------------------------
+// River geometry
+// ---------------------------------------------------------------------------
+
+/**
+ * Dense uniform Catmull-Rom sampling of the river's control points, roughly
+ * every `step` metres. client/src/js/pyramid.js contains a byte-for-byte copy of
+ * this routine; keep the two identical so collision matches the rendered water.
+ */
+function riverPolyline(points, step = 2) {
+  const out = [];
+  const n = points.length;
+  for (let i = 0; i < n - 1; i++) {
+    const p0 = points[Math.max(0, i - 1)];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[Math.min(n - 1, i + 2)];
+    const steps = Math.max(1, Math.ceil(Math.hypot(p2[0] - p1[0], p2[1] - p1[1]) / step));
+    for (let s = 0; s < steps; s++) {
+      const t = s / steps;
+      const t2 = t * t;
+      const t3 = t2 * t;
+      const f = (a, b, c, d) => 0.5 * (2 * b + (c - a) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (3 * b - a - 3 * c + d) * t3);
+      out.push([f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]);
+    }
+  }
+  out.push([points[n - 1][0], points[n - 1][1]]);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Height field (walkable surface)
 // ---------------------------------------------------------------------------
 
@@ -253,10 +348,67 @@ class HeightField {
   constructor(cfg = CONFIG) {
     this.origin = cfg.nav.origin;
     this.size = cfg.nav.size;
-    this.static = new Float32Array(this.size * this.size);
-    this.h = new Float32Array(this.size * this.size);
+    const n = this.size * this.size;
+    this.static = new Float32Array(n);
+    this.h = new Float32Array(n);
+    this.speed = new Float32Array(n).fill(1); // terrain speed multiplier (fords)
+    this.riverDist = new Float32Array(n).fill(Infinity); // distance to the river centre line
     for (const o of cfg.obstacles) this._raster(this.static, o.x0, o.z0, o.x1, o.z1, o.h);
+    if (cfg.river) this._rasterRiver(cfg.river, cfg.crossings || []);
     this.h.set(this.static);
+  }
+
+  /** Water is impassable; bridges get a ramped deck, fords stay walkable but slow. */
+  _rasterRiver(river, crossings) {
+    const line = riverPolyline(river.points);
+    const reach = river.halfWidth + river.bank + 4;
+    const size = this.size;
+    for (let s = 0; s < line.length - 1; s++) {
+      const ax = line[s][0];
+      const az = line[s][1];
+      const bx = line[s + 1][0];
+      const bz = line[s + 1][1];
+      const cx0 = Math.max(0, Math.floor(Math.min(ax, bx) - reach - this.origin));
+      const cx1 = Math.min(size - 1, Math.ceil(Math.max(ax, bx) + reach - this.origin));
+      const cz0 = Math.max(0, Math.floor(Math.min(az, bz) - reach - this.origin));
+      const cz1 = Math.min(size - 1, Math.ceil(Math.max(az, bz) + reach - this.origin));
+      if (cx0 > cx1 || cz0 > cz1) continue;
+      const dx = bx - ax;
+      const dz = bz - az;
+      const len2 = dx * dx + dz * dz || 1;
+      for (let cz = cz0; cz <= cz1; cz++) {
+        const pz = cz + this.origin + 0.5;
+        for (let cx = cx0; cx <= cx1; cx++) {
+          const px = cx + this.origin + 0.5;
+          const t = clamp(((px - ax) * dx + (pz - az) * dz) / len2, 0, 1);
+          const d = Math.hypot(px - (ax + dx * t), pz - (az + dz * t));
+          const i = cz * size + cx;
+          if (d < this.riverDist[i]) this.riverDist[i] = d;
+        }
+      }
+    }
+    for (let i = 0; i < this.riverDist.length; i++) {
+      if (this.riverDist[i] < river.halfWidth) this.static[i] = BLOCKED;
+    }
+    for (const c of crossings) {
+      const cx0 = Math.max(0, Math.floor(c.x0 - this.origin));
+      const cx1 = Math.min(size, Math.ceil(c.x1 - this.origin));
+      const cz0 = Math.max(0, Math.floor(c.z0 - this.origin));
+      const cz1 = Math.min(size, Math.ceil(c.z1 - this.origin));
+      for (let cz = cz0; cz < cz1; cz++) {
+        const pz = cz + this.origin + 0.5;
+        for (let cx = cx0; cx < cx1; cx++) {
+          const i = cz * size + cx;
+          if (c.kind === 'bridge') {
+            const ramp = Math.min(clamp((pz - c.z0) / c.ramp, 0, 1), clamp((c.z1 - pz) / c.ramp, 0, 1));
+            this.static[i] = Math.round(c.deck * ramp * 100) / 100;
+          } else if (c.kind === 'ford' && this.riverDist[i] < river.halfWidth) {
+            this.static[i] = 0;
+            this.speed[i] = c.slow;
+          }
+        }
+      }
+    }
   }
 
   _raster(arr, x0, z0, x1, z1, h) {
@@ -282,6 +434,12 @@ class HeightField {
   heightAt(x, z) {
     const c = this.cellOf(x, z);
     return c < 0 ? BLOCKED : this.h[c];
+  }
+
+  /** Terrain speed multiplier at a point (1 everywhere except fords). */
+  speedAt(x, z) {
+    const c = this.cellOf(x, z);
+    return c < 0 ? 1 : this.speed[c];
   }
 
   cellCenterX(c) {
@@ -613,8 +771,16 @@ function moveSpeed(p) {
   return Math.min(18, s);
 }
 
+/** Pets' hauling slowdown (pack animals shrug off weight better than builders). */
 function loadFactor(carried, capacity) {
   return 1 - 0.3 * clamp(carried / Math.max(1, capacity), 0, 1);
+}
+
+/** Builders' carry weight: even a single block slows you sharply. */
+function playerCarryFactor(carried, capacity) {
+  if (carried <= 0) return 1;
+  const c = CONFIG.player.carry;
+  return c.base - c.perLoad * clamp(carried / Math.max(1, capacity), 0, 1);
 }
 
 function trainingMultiplier(p) {
@@ -774,6 +940,8 @@ function publicConfig() {
     pile: PILE,
     zones: ZONES,
     obstacles: OBSTACLES,
+    river: RIVER,
+    crossings: CROSSINGS,
     player: CONFIG.player,
     pet: CONFIG.pet,
     palette: PALETTE,
@@ -787,6 +955,9 @@ module.exports = {
   PILE,
   ZONES,
   OBSTACLES,
+  RIVER,
+  CROSSINGS,
+  riverPolyline,
   UPGRADES,
   PETS,
   PALETTE,
@@ -806,6 +977,7 @@ module.exports = {
   carryCapacity,
   moveSpeed,
   loadFactor,
+  playerCarryFactor,
   trainingMultiplier,
   blockReward,
   tribute,
