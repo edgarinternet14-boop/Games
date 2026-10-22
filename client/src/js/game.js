@@ -442,8 +442,9 @@ function builderTitle(placed) {
 // the stat/progress clusters at the top, the context prompt at the bottom and the
 // chat panel in the bottom-left corner.
 const OBJ_MARGIN = { side: 70, top: 112, bottom: 214, chatRight: 470, chatTop: 300 };
-// HUD panels the marker steps around wherever it would otherwise land on them.
-const OBJ_AVOID = ['stats', 'progress', 'net', 'chat', 'dock', 'prompt'];
+// HUD panels the marker steps around wherever it would otherwise land on them (the stat column
+// by its rows, since its box has empty padding below them).
+const OBJ_AVOID = '#stats > *, #progress, #net, #chat, #dock, #prompt';
 
 class UI {
   constructor(game) {
@@ -1137,8 +1138,8 @@ class UI {
     if (now - o.zonesAt > 400) {
       o.zonesAt = now;
       o.panels = [];
-      for (const id of OBJ_AVOID) {
-        const r = $(id).getBoundingClientRect();
+      for (const node of document.querySelectorAll(OBJ_AVOID)) {
+        const r = node.getBoundingClientRect();
         if (r.width > 0 && r.height > 0) o.panels.push([r.left - 6, r.top - 6, r.right + 6, r.bottom + 6]);
       }
     }
@@ -1171,9 +1172,13 @@ class UI {
     if (!hits(b0)) return null;
     let best = null;
     let bestCost = Infinity;
+    const cx = w / 2;
+    const cy = h / 2;
     const tryAt = (px, py) => {
       const b = box(px, py);
       if (b[0] < 4 || b[1] < 4 || b[2] > w - 4 || b[3] > h - 4 || hits(b)) return;
+      // Never hop to the far half of the screen: the chevron would point back across it.
+      if (((px - cx) * (x - cx) < 0 && Math.abs(px - x) > 150) || ((py - cy) * (y - cy) < 0 && Math.abs(py - y) > 150)) return;
       // Sideways steps read better than vertical ones (the marker keeps its height on the horizon).
       const cost = Math.abs(px - x) + 1.5 * Math.abs(py - y) + (side && (px - x) * side < 0 ? 40 : 0);
       if (cost < bestCost) {
@@ -1260,6 +1265,8 @@ class Game {
 
   showMenu(reason) {
     this.state = 'menu';
+    // The quarry label fades for the waypoint during play; the menu backdrop shows it again.
+    if (this.engine.quarryLabel) this.engine.quarryLabel.material.opacity = 1;
     this.modal = null;
     this.input.exitLock();
     for (const id of ['hud', 'shop', 'character', 'pause', 'settings', 'overlay', 'board']) this.ui.show(id, false);
@@ -1302,6 +1309,8 @@ class Game {
   }
 
   enterPlay() {
+    // Settings opened from the menu while connecting would otherwise stay up over play.
+    if (this.ui.isShown('settings')) this.closeSettings();
     this.state = 'playing';
     this.ui.show('menu', false);
     this.ui.show('hud', true);
@@ -1360,7 +1369,8 @@ class Game {
   showBoard(rows) {
     const W = this.world;
     const total = W ? W.remotes.players.size + 1 : rows.length;
-    const me = this.self ? [this.myId, this.name, this.color, this.self.placed, this.self.pets.length] : null;
+    const p = this.players.get(this.myId);
+    const me = this.self ? [this.myId, p ? p.name : this.name, this.myColor || this.color, this.self.placed, this.self.pets.length] : null;
     this.ui.board(rows, this.myId, total, me);
   }
 
@@ -1781,6 +1791,8 @@ class Game {
       } else if (e.key === 'Escape') {
         chatInput.value = '';
         chatInput.blur();
+      } else if (e.key === 'Tab') {
+        e.preventDefault(); // keep typing; Tab would otherwise move focus onto the dock
       }
       e.stopPropagation();
     });
@@ -1788,7 +1800,7 @@ class Game {
     window.addEventListener('keydown', (e) => {
       // Tab is a game key (the builders board), so menus and modals cycle focus themselves.
       if (e.code === 'Tab' && this.trapFocus(e)) return;
-      if (e.key === 'Escape' && this.state === 'menu' && this.ui.isShown('settings')) {
+      if (e.key === 'Escape' && this.state !== 'playing' && this.ui.isShown('settings')) {
         this.closeSettings();
         return;
       }
@@ -1800,7 +1812,7 @@ class Game {
         this.input.exitLock();
         chatInput.focus();
       } else if (e.code === 'Tab') {
-        $('board').classList.remove('pinned');
+        this.pinBoard(false);
         this.ui.show('board', true);
       } else if (e.code === 'KeyC' && !e.repeat) {
         if (this.modal === 'character') this.backOut(true);

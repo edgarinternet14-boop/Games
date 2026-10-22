@@ -3184,11 +3184,19 @@ export class Engine {
         stone.push(scaleUv(ring, 0.5));
       }
     }
-    // Buttresses where the causeway meets each bank.
-    for (const zb of [zS + 0.9, zN - 0.9]) {
-      for (const side of [-1, 1]) {
+    // Buttresses where the causeway meets each bank. Each stands wholly in the water cells of
+    // the land column it overhangs (the river curves, so the banks differ per side), never on
+    // ground a builder can walk.
+    for (const side of [-1, 1]) {
+      const xb = side < 0 ? c.x0 - edge - 0.45 : c.x1 + edge + 0.45;
+      const xc = side < 0 ? Math.floor(xb - 0.5) + 0.5 : Math.floor(xb + 0.5) + 0.5;
+      let zs = Math.floor(r.centreZ(xc) - hw);
+      while (r.distance(xc, zs + 0.5) >= hw) zs++;
+      let zn = Math.ceil(r.centreZ(xc) + hw);
+      while (r.distance(xc, zn - 0.5) >= hw) zn--;
+      for (const zb of [zs + 0.85, zn - 0.85]) {
         const b = metricBox(1.0, 1.3, 1.7, T);
-        b.translate(side < 0 ? c.x0 - edge - 0.45 : c.x1 + edge + 0.45, 0.0, zb);
+        b.translate(xb, 0.0, zb);
         stone.push(b);
       }
     }
@@ -3217,19 +3225,21 @@ export class Engine {
       stone.push(extrudeAcross(band(0, ph), Math.min(xin, xout), Math.max(xin, xout)));
       stone.push(extrudeAcross(band(ph, 0.12), Math.min(xin, xout) - 0.08, Math.max(xin, xout) + 0.08));
       const xm = (xin + xout) / 2 + side * 0.12;
-      // Gate pillars with cavetto caps and gilded pyramidia at both ends.
-      for (const zz of [zA - 0.3, zB + 0.3]) {
+      // Gate pillars with cavetto caps and gilded pyramidia at both ends, each filling the end
+      // cell of its parapet's collision box so no builder can stand inside one.
+      const xp = side < 0 ? c.x0 - 0.5 : c.x1 + 0.5;
+      for (const zz of [c.z0 + 0.5, c.z1 - 0.5]) {
         const pil = metricBox(1.0, 3.6, 1.0, T);
-        pil.translate(xm, 1.8, zz);
+        pil.translate(xp, 1.8, zz);
         const neck = metricBox(1.1, 0.12, 1.1, T);
-        neck.translate(xm, 3.5, zz);
+        neck.translate(xp, 3.5, zz);
         const cap = metricBox(1.28, 0.24, 1.28, T);
-        cap.translate(xm, 3.72, zz);
+        cap.translate(xp, 3.72, zz);
         stone.push(pil, neck, cap);
         const tip = new THREE.ConeGeometry(0.62, 0.78, 4, 1).rotateY(Math.PI / 4);
-        tip.translate(xm, 4.23, zz);
+        tip.translate(xp, 4.23, zz);
         gold.push(tip);
-        this.cameraBoxes.push([xm - 0.64, zz - 0.64, xm + 0.64, zz + 0.64, 4.62]);
+        this.cameraBoxes.push([xp - 0.64, zz - 0.64, xp + 0.64, zz + 0.64, 4.62]);
       }
       // Small obelisks on the parapets at mid-span.
       const zm = (c.z0 + c.z1) / 2;
@@ -3339,10 +3349,11 @@ export class Engine {
     const zf = edge - north * out; // river face of the quay
     const stone = [];
     const T = 2.4;
-    const quay = metricBox(qx1 - qx0, 0.92, out + 0.4, T);
-    quay.translate(qcx, -0.22, edge - north * (out / 2 - 0.2));
-    const pave = metricBox(qx1 - qx0 + 2, 0.06, 3.4, T);
-    pave.translate(qcx, 0.0, edge + north * 1.9);
+    // The slab stops at the waterline: the bank behind it is walkable ground at y = 0.
+    const quay = metricBox(qx1 - qx0, 0.92, out, T);
+    quay.translate(qcx, -0.22, edge - north * (out / 2));
+    const pave = metricBox(qx1 - qx0 + 2, 0.06, 3.6, T);
+    pave.translate(qcx, 0.0, edge + north * 1.8);
     stone.push(quay, pave);
     // Steps down into the water at the downstream end.
     for (let k = 0; k < 2; k++) {

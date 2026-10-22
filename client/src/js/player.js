@@ -1003,8 +1003,9 @@ export class CharacterModel {
 
     // ----- gait clock and foot plants -----
     // Stride rates (cycles/s), matched to each gait's swing reach so the planted feet stay put.
-    const fRun = Math.min(2.6, 1.25 + 0.1 * v);
-    const fHeavy = Math.min(2.4, (1.05 * v) / (4 * LEG_LENGTH * Math.sin(heavyReach(v, h))));
+    // Past full reach (fast runs, light loads at high Speed) only a quicker cadence keeps them planted.
+    const fRun = 1.25 + 0.1 * v + 0.1 * Math.max(0, v - 12);
+    const fHeavy = Math.min(2.4, (1.05 * v) / (4 * LEG_LENGTH * Math.sin(heavyReach(v, h)))) + 0.15 * Math.max(0, v - 6.5);
     this.phase += dt * TAU * (fRun + (fHeavy - fRun) * cw) * smooth01(v / 0.6);
     const step = Math.floor(this.phase / Math.PI);
     if (step !== this.step) {
